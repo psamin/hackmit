@@ -42,6 +42,11 @@ BUFFER_S = 12.0
 ARM_EP_MIN_S = 1.0    # arm movement needed for an arm episode
 ARM_QUIET_S = 0.6     # no arm movement for this long ends the episode
 SNAPSHOT_EVERY_S = 1.0
+# A track this far past its last sighting can no longer affect anything: the longest
+# lookback in the loop is ACTIVE_WINDOW_S, and the two rules that reach into lost
+# tracks need them within 2.0s (ID-switch donor) and 0.5s (lost-then-placed).
+TRACK_TTL_S = ACTIVE_WINDOW_S + 2.0
+PRUNE_EVERY_S = 2.0   # how often to sweep dead tracks out of the table
 
 
 def ego_homography(prev_g, g, boxes):
@@ -159,7 +164,7 @@ def main():
     prev_g, prev_boxes, prev_centres, prev_arm_c, arm_ep = None, [], {}, None, None
     events_f = open(out / "events.jsonl", "w")
     timing = collections.defaultdict(float)
-    n_frames, n_events, t_wall = 0, 0, time.perf_counter()
+    n_frames, n_events, t_wall, last_prune = 0, 0, time.perf_counter(), -1e18
     idx = int(args.start * src_fps) if not live else 0
 
     def emit(fire, n, i, tr, t, b, frame):
@@ -304,6 +309,16 @@ def main():
                 arm_ep = None
         for n in present:
             last_seen[n] = t
+
+        # Drop tracks that can no longer fire anything. Without this the table keeps
+        # every track ID the tracker ever issued: on a run of any length that is an
+        # unbounded dict, and the ID-switch donor lookup below rescans all of it every
+        # time a new track appears, so the cost grows with uptime. That is fine for a
+        # 60-second clip and not fine for a device meant to watch a room all day.
+        if t - last_prune >= PRUNE_EVERY_S:
+            last_prune = t
+            for j in [j for j, tr in tracks.items() if tr.last_t is not None and t - tr.last_t > TRACK_TTL_S]:
+                del tracks[j]
 
         prev_g, prev_boxes, prev_centres, prev_arm_c = g, list(boxes), centres, arm_c
         n_frames += 1
