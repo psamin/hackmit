@@ -23,7 +23,8 @@ IMAGE, STATE, ACTION = "observation.images.wrist", "observation.state", "action"
 class DummyPolicy:
     """Returns the current pose for every step: exercises the whole loop without a checkpoint."""
 
-    def __init__(self, joints, steps, height, width):
+    def __init__(self, joints, steps, height, width, gripper=None):
+        self.gripper = gripper  # if set, the last joint (the gripper) is commanded to this value
         self.info = {"policy": "dummy", "joint_count": joints, "n_action_steps": steps,
                      "action_min": [-np.pi] * joints, "action_max": [np.pi] * joints, "image_shape": [3, height, width]}
 
@@ -31,7 +32,10 @@ class DummyPolicy:
         pass
 
     def act(self, image, state, task):
-        return np.repeat(state[None, :], self.info["n_action_steps"], axis=0)
+        actions = np.repeat(state[None, :], self.info["n_action_steps"], axis=0)
+        if self.gripper is not None:
+            actions[:, -1] = self.gripper
+        return actions
 
 
 class LeRobotPolicy:
@@ -140,10 +144,11 @@ def main():
     ap.add_argument("--joints", type=int, default=7, help="--dummy only: OpenYAM is 6 joints + gripper")
     ap.add_argument("--steps", type=int, default=10, help="--dummy only: actions per chunk")
     ap.add_argument("--image-size", default="480x640", help="--dummy only: HxW the laptop must send")
+    ap.add_argument("--dummy-gripper", type=float, default=None, help="--dummy only: command the gripper to this value")
     args = ap.parse_args()
     if args.dummy:
         h, w = map(int, args.image_size.split("x"))
-        policy = DummyPolicy(args.joints, args.steps, h, w)
+        policy = DummyPolicy(args.joints, args.steps, h, w, args.dummy_gripper)
     elif args.policy_path:
         policy = LeRobotPolicy(args.policy_path, args.device, args.robot_type)
     else:
