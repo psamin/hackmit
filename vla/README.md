@@ -72,3 +72,15 @@ PYTHONPATH=. python vla/run_policy.py --real --server https://<pod-id>-8000.prox
 Type `go`, then `p` (preflight: checks the server, the coordinator and fresh observations, moves nothing), `s`
 (start), `x` (stop), `q` (quit: the motors go limp, so support the arm). Mock check: preflight passed, 12 chunks in
 4 s, clean stop and quit; `--real` without `go` exits before connecting.
+
+## Demos without a VR headset (`scripted_demos.py`)
+
+```bash
+python vla/scripted_demos.py teach spots/left.json      # motors stay disabled: pose the arm by hand, name each pose + o/c
+PYTHONPATH=. python vla/scripted_demos.py record spots/*.json --real --camera-index <arm camera> --reps 10
+```
+
+`teach` only sends refresh queries, like `arm/arm_probe.py`. `record` replays each spot's pick with ±0.03 rad noise
+(grasp and release poses exact), waits for Enter to reset the bottle, and records like `collect_openyam.py`.
+Mock check (2026-09-19): 2 spots × 2 reps → 4 episodes, 706 frames. Recorded joint states follow the taught poses
+and the gripper runs open → closed → open.
