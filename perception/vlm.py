@@ -51,6 +51,13 @@ MODEL = os.environ.get("COMPASS_VLM_MODEL", "claude-sonnet-5")
 # the remaining headroom is for adaptive thinking, which counts against max_tokens.
 MAX_TOKENS_MEMORY = 2048
 MAX_TOKENS_ANSWER = 1024
+# Every detection opens the trigger, because YOLOE's whole vocabulary is the target list
+# and it has no way to say "none of these" -- so a mug gets tracked as a pill bottle and
+# fires a real event. The VLM catches those, marking them "other" or leaving confidence
+# low, and these two thresholds stop that junk becoming a confident spoken answer about
+# someone's medication. Nothing is deleted; memory.jsonl still has every call.
+JUNK_CONFIDENCE = 0.2       # below this the memory is noise, drop it from the answer
+UNCERTAIN_CONFIDENCE = 0.4  # below this it is offered as a maybe, to be hedged
 EFFORT = "low"  # both jobs are description, not reasoning; also bounds thinking tokens
 
 # Server-side refusal fallbacks exist because the Opus and Fable safety classifiers
@@ -155,13 +162,23 @@ def ask(question, memory_path):
                                 "frames": [s["frame"]]}, memory_path)
             memories += [m] if m else []
     memories = [m for m in memories if m["event"] not in ("still_in_hand", "no_change")]
-    lines = [f"- {m['logged_at']} (video {m['video_t']}s): {m['event']} {m['object']}: {m['location_description']} (confidence {m['confidence']})"
-             for m in memories]
+    memories = [m for m in memories
+                if m.get("object") != "other" and float(m.get("confidence") or 0) >= JUNK_CONFIDENCE]
+    lines = []
+    for m in memories:
+        doubt = " -- UNCERTAIN" if float(m.get("confidence") or 0) < UNCERTAIN_CONFIDENCE else ""
+        lines.append(f"- {m['logged_at']} (video {m['video_t']}s): {m['event']} {m['object']}: "
+                     f"{m['location_description']} (confidence {m['confidence']}{doubt})")
+    if not lines:
+        lines = ["(nothing recorded yet)"]
     t0 = time.perf_counter()
     resp = client.messages.create(
         model=MODEL, max_tokens=MAX_TOKENS_ANSWER, output_config={"effort": EFFORT},
         system="You answer questions about where the user left things, from the memory log below. Answer in one or two "
-               "short spoken sentences. Use the most recent 'placed' memory for the object. If the log doesn't say, say so.\n\n"
+               "short spoken sentences. Use the most recent 'placed' memory for the object. If the log doesn't say, say so.\n"
+               "Prefer the most recent high-confidence memory. A line marked UNCERTAIN may be a misdetection: you may "
+               "use it, but say you are not sure. Never state a medication's location with certainty from an UNCERTAIN "
+               "line -- the person will act on your answer.\n\n"
                "Memory log (oldest first):\n" + "\n".join(lines),
         messages=[{"role": "user", "content": question}], **FALLBACK)
     # describe_event already guards this; ask() is the path the user actually hears, so a

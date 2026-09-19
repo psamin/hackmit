@@ -122,6 +122,32 @@ python test_prompts.py --weights yoloe-11s-seg.pt        --imgsz 640 --isolate
 python test_prompts.py --weights weights/yoloe-26s-seg.pt --imgsz 640 --isolate
 ```
 
+### The trigger fires on EVERY detection, not just the "right" ones
+
+Worth being explicit, because the code reads as though it filters and it does not.
+`model.set_classes(targets + [ARM])` makes the target list YOLOE's **entire vocabulary**,
+and the loop's `if n not in targets: continue` can therefore only ever exclude `person`.
+A mug is labelled `pill bottle`, tracked, gated and fired exactly like a real one. There
+is no "other" bucket to fall into and no filter standing between a wrong label and a
+Claude call.
+
+Two consequences:
+
+1. **`--conf` is a recall and cost dial, not a correctness dial.** Raising it does not
+   make surviving labels right; it only removes boxes. And the two errors are wildly
+   asymmetric now: a false positive costs ~$0.005 and a memory the VLM marks `other` or
+   low-confidence, while a false negative means no box, no track, no event, no VLM call
+   at all - silent and total. Prefer the lower threshold.
+2. **The spoken answer needs its own filter**, since junk events are now expected rather
+   than exceptional. `vlm.ask()` drops memories the VLM called `other` or scored below
+   `JUNK_CONFIDENCE` (0.2), and marks anything under `UNCERTAIN_CONFIDENCE` (0.4) so the
+   answering model hedges instead of asserting. Nothing is deleted - `memory.jsonl` keeps
+   every call, including `detector_label`, so the disagreements stay measurable.
+
+   Verified 2026-09-19 on a log of one real memory plus three kinds of noise: the mug
+   YOLOE called a pill bottle and a 0.1-confidence blur were both dropped, and "where is
+   my medicine?" answered with the kitchen counter rather than the water bottle.
+
 ### The detector proposes, the VLM decides
 
 This is the structural answer to the mislabelling above, and it is why the split not
