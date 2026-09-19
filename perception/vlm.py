@@ -13,10 +13,15 @@ from pydantic import BaseModel
 
 _env = Path(__file__).with_name(".env")  # ANTHROPIC_API_KEY=... (gitignored)
 if _env.exists():
-    for line in _env.read_text().splitlines():
+    # utf-8-sig, not the default. On Windows `>` and Out-File write UTF-8 WITH a byte
+    # order mark, while read_text() decodes as cp1252 -- so the BOM arrives as "i>>?" glued
+    # to the first key, ANTHROPIC_API_KEY never gets set, and the only symptom is a 401 on
+    # the first event. utf-8-sig strips the BOM if present and is otherwise plain UTF-8.
+    for line in _env.read_text(encoding="utf-8-sig").splitlines():
         k, _, v = line.partition("=")
-        if k.strip() and not k.startswith("#"):
-            os.environ.setdefault(k.strip(), v.strip())
+        k = k.strip()
+        if k and not k.startswith("#"):
+            os.environ.setdefault(k, v.strip())
 
 # Sonnet, deliberately. This is label-reading and scene description from a few small
 # stills, not reasoning, and it is 2.5x cheaper per token than Opus in and out.
