@@ -128,6 +128,8 @@ def main():
     ap.add_argument("--out", default="runs/latest")
     ap.add_argument("--no-vlm", action="store_true")
     ap.add_argument("--no-arm", action="store_true", help="ablation: trigger on motion only")
+    ap.add_argument("--static-camera", action="store_true",
+                    help="camera does not move (phone propped on a table/dock): skip ego-motion removal")
     args = ap.parse_args()
 
     args.device = pick_device(args.device)
@@ -211,8 +213,12 @@ def main():
         ids = r.boxes.id.int().tolist() if r.boxes.id is not None else [-1] * len(names)
         arms = [] if args.no_arm else [b for b, n in zip(boxes, names) if n == ARM and b[3] >= 0.9 * frame.shape[0]]
 
+        # A propped phone has no camera motion to remove, so the homography is both
+        # wasted work (feature detection + optical flow + RANSAC on every frame) and a
+        # source of error: on a mostly-empty table there are few background features to
+        # fit, and a bad fit shows up as phantom object motion.
         t0 = time.perf_counter()
-        H = ego_homography(prev_g, g, prev_boxes) if prev_g is not None else None
+        H = None if args.static_camera else (ego_homography(prev_g, g, prev_boxes) if prev_g is not None else None)
         timing["ego_motion"] += time.perf_counter() - t0
 
         centres = {}
@@ -234,9 +240,17 @@ def main():
                     donor = max(lost, key=lambda o: o.active_end)
                     tr.armed, tr.active_start, tr.active_end, tr.active_frames, tr.disp = True, donor.active_start, donor.active_end, donor.active_frames, donor.disp
                     donor.armed = False
+            # How far the object moved since the last frame, with camera motion removed.
+            # Static camera: the raw centre delta already is that. Moving camera: warp the
+            # previous centre through the homography first. If the homography failed we
+            # leave this at zero, which reads as "not moving" — deliberately conservative,
+            # since a bad fit would otherwise fire put-downs at random.
             step_vec = np.zeros(2)
-            if H is not None and i in prev_centres:
-                step_vec = c - cv2.perspectiveTransform(prev_centres[i].reshape(1, 1, 2), H).ravel()
+            if i in prev_centres:
+                if args.static_camera:
+                    step_vec = c - prev_centres[i]
+                elif H is not None:
+                    step_vec = c - cv2.perspectiveTransform(prev_centres[i].reshape(1, 1, 2), H).ravel()
             moving = np.linalg.norm(step_vec) / diag > MOVE_THR
             covered = any(overlap(b, a) > CONTACT_THR for a in arms)
 
@@ -276,8 +290,9 @@ def main():
         if arms:
             a = max(arms, key=lambda a: (a[2] - a[0]) * (a[3] - a[1]))
             arm_c = np.array([(a[0] + a[2]) / 2, (a[1] + a[3]) / 2])
-        if arm_c is not None and prev_arm_c is not None and H is not None:
-            arm_step = arm_c - cv2.perspectiveTransform(prev_arm_c.reshape(1, 1, 2), H).ravel()
+        if arm_c is not None and prev_arm_c is not None and (H is not None or args.static_camera):
+            arm_step = (arm_c - prev_arm_c) if args.static_camera else \
+                       (arm_c - cv2.perspectiveTransform(prev_arm_c.reshape(1, 1, 2), H).ravel())
             if np.linalg.norm(arm_step) / diag > MOVE_THR:
                 arm_ep = arm_ep or {"start": t, "saw": False}
                 arm_ep["last_move"] = t
