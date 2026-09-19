@@ -40,27 +40,38 @@ def teach(path: str) -> None:
     bus = cmc.GsUsbBus(vendor_id=0x1D50, product_id=0x606F)
     robot = (cmc.Robot.builder().add_bus("openyam", bus, damiao.DamiaoCodec())
              .add_arm("arm", bus="openyam", motors=motors).build())
+    def read_q():
+        for _ in range(5):
+            robot.refresh()
+            robot.tick(5000)
+            time.sleep(0.01)
+        return [round(float(v), 4) for v in robot["arm"].positions()]
+
     robot.connect()
     poses = []
-    print("Motors stay disabled. Pose the arm by hand, then type the pose name and o/c for the gripper "
-          "('above o', 'grasp c'). Empty line = refresh, q = save.\n"
+    print("Motors stay disabled. Keep holding the arm where you want it, type the pose name and o/c for the gripper "
+          "('above o', 'grasp c'), and press Enter: the angles are read when you press Enter, so the arm must still "
+          "be in place then. Empty line = show the angles now, q = save.\n"
           "Stop at the grasp: the lift and hand-over come from `handover`, and must not be recorded.")
     try:
+        shown = read_q()
         while True:
-            for _ in range(5):
-                robot.refresh()
-                robot.tick(5000)
-                time.sleep(0.01)
-            q = [round(float(v), 4) for v in robot["arm"].positions()]
-            words = input(f"{q}  pose + o/c: ").split()
+            words = input(f"{shown}  pose + o/c: ").split()
             if words == ["q"]:
                 break
+            shown = read_q()  # read now, with the arm held in place, not before the prompt was printed
             if len(words) == 2 and words[1] in ("o", "c"):
-                poses.append({"name": words[0], "q": q, "gripper": 1.0 if words[1] == "o" else 0.0})
+                if poses and shown == poses[-1]["q"]:
+                    print(f"  NOT SAVED: identical to {poses[-1]['name']}; the arm did not move. Move it and retry.")
+                    continue
+                poses.append({"name": words[0], "q": shown, "gripper": 1.0 if words[1] == "o" else 0.0})
+                print(f"  saved {words[0]} {'open' if words[1] == 'o' else 'CLOSED'} {shown}")
     finally:
         robot.__exit__(None, None, None)
     json.dump({"poses": poses}, open(path, "w"), indent=1)
-    print(f"saved {len(poses)} poses to {path}")
+    print(f"\nsaved {len(poses)} poses to {path}")
+    for pose in poses:
+        print(f"  {pose['name']:<8} {'open' if pose['gripper'] else 'CLOSED'}  {pose['q']}")
     warn_poses(path, poses)
 
 
