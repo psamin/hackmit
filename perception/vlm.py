@@ -89,6 +89,10 @@ def ask(question, memory_path):
                "short spoken sentences. Use the most recent 'placed' memory for the object. If the log doesn't say, say so.\n\n"
                "Memory log (oldest first):\n" + "\n".join(lines),
         messages=[{"role": "user", "content": question}], **FALLBACK)
+    # describe_event already guards this; ask() is the path the user actually hears, so a
+    # refusal that survives the fallback chain must not come back as an empty spoken answer.
+    if resp.stop_reason == "refusal":
+        return "Sorry, I can't answer that one.", time.perf_counter() - t0
     text = "".join(b.text for b in resp.content if b.type == "text")
     return text, time.perf_counter() - t0
 
