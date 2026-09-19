@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<!--
+  Phone camera client: streams the rear camera to the laptop pipeline as JPEGs
+  over a WebSocket, one JPEG per binary message — the exact wire format
+  glasses_rx.py already expects, so the pipeline needs no changes to accept a
+  phone instead of the glasses.
+
+  Why a web page instead of a native iOS app:
+    - No Xcode, no Mac needed to build, no USB cable, no App Store, no
+      provisioning profiles. The user opens a URL in Safari and taps Start.
+    - Works identically on Android Chrome.
+    - The phone only captures and uploads. All detection, tracking and VLM
+      work stays on the laptop, so an old phone owned by an elderly user is
+      not asked to run a neural network.
+
+  Constraints this file works around:
+    - getUserMedia() only runs in a "secure context": HTTPS, or localhost.
+      The phone reaches the laptop by LAN IP, which is not localhost, so
+      serve.py serves this page over HTTPS with a self-signed certificate.
+    - A page loaded over HTTPS may not open an insecure ws:// socket
+      (mixed-content blocking), so the relay must be wss://. The default
+      below is derived from the page's own origin so it matches automatically.
+    - iOS suspends a backgrounded tab and sleeps the screen, which stops
+      capture. A Wake Lock keeps the screen on while streaming.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Compass Camera</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0; background: #111; color: #eee;
+    font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    display: flex; flex-direction: column; min-height: 100dvh;
+  }
+  header { padding: 12px 16px; font-weight: 600; }
+  #view { flex: 1; position: relative; background: #000; overflow: hidden; }
+  video { width: 100%; height: 100%; object-fit: cover; display: block; }
+  #stats {
+    position: absolute; left: 12px; bottom: 12px; right: 12px;
+    background: rgba(0,0,0,.55); padding: 8px 10px; border-radius: 8px;
+    font-size: 13px; font-variant-numeric: tabular-nums; white-space: pre-line;
+  }
+  footer { padding: 16px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  button {
+    flex: 1 1 140px; min-height: 52px; font-size: 17px; font-weight: 600;
+    border: 0; border-radius: 10px; background: #2f6fed; color: #fff;
+  }
+  button[disabled] { background: #444; color: #999; }
+  input {
+    flex: 2 1 220px; min-height: 52px; padding: 0 12px; font-size: 15px;
+    border-radius: 10px; border: 1px solid #444; background: #1c1c1c; color: #eee;
+  }
+  #status { padding: 0 16px 16px; font-size: 14px; color: #9ab; }
+  .err { color: #f77; }
+</style>
+</head>
+<body>
+<header>Compass — phone camera</header>
+
+<div id="view">
+  <!-- playsinline is required or iOS Safari takes the video fullscreen -->
+  <video id="preview" playsinline muted autoplay></video>
+  <div id="stats">not streaming</div>
+</div>
+
+<footer>
+  <input id="url" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false">
+  <button id="toggle">Start</button>
+</footer>
+<div id="status"></div>
+
+<script>
+// ---------------------------------------------------------------------------
+// Tunables. These defaults match fake_glasses.py so a phone run and a replayed
+// video run put the same kind of frames through the pipeline.
+// ---------------------------------------------------------------------------
+const TARGET_FPS    = 10;   // pipeline processes ~10 fps; sending more is wasted upload
+const TARGET_HEIGHT = 720;  // downscale before encoding: the pipeline resizes to 640px wide anyway
+const JPEG_QUALITY  = 0.7;
+// If the socket already has more than this many bytes waiting, skip this frame.
+// Without this, a weak Wi-Fi link silently queues frames forever: upload latency
+// grows without bound and the "live" view drifts minutes behind reality.
+const MAX_BUFFERED_BYTES = 256 * 1024;
+
+const $ = (id) => document.getElementById(id);
+const els = { preview: $("preview"), stats: $("stats"), toggle: $("toggle"), url: $("url"), status: $("status") };
+
+// Default relay URL derived from how this page was loaded, so it points at the
+// same laptop without the user typing an IP. https -> wss, port 8765.
+els.url.value = `wss://${location.hostname}:8765`;
+
+let stream = null, socket = null, wakeLock = null, timer = null, running = false;
+const canvas = document.createElement("canvas");
+const ctx = canvas.getContext("2d", { alpha: false });
+let sent = 0, skipped = 0, bytes = 0, startedAt = 0;
+
+function say(msg, isError = false) {
+  els.status.textContent = msg;
+  els.status.className = isError ? "err" : "";
+  if (isError) console.error(msg);
+}
+
+/** Grab one frame, encode it as JPEG, push it down the socket. */
+async function sendFrame() {
+  if (!running || !socket || socket.readyState !== WebSocket.OPEN) return;
+  const video = els.preview;
+  if (!video.videoWidth) return;  // camera still warming up
+
+  // Backpressure: drop this frame rather than deepening the send queue.
+  if (socket.bufferedAmount > MAX_BUFFERED_BYTES) { skipped++; return; }
+
+  const scale = TARGET_HEIGHT / video.videoHeight;
+  const w = Math.round(video.videoWidth * scale), h = TARGET_HEIGHT;
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+  ctx.drawImage(video, 0, 0, w, h);
+
+  const blob = await new Promise((res) => canvas.toBlob(res, "image/jpeg", JPEG_QUALITY));
+  if (!blob || !running || socket.readyState !== WebSocket.OPEN) return;
+  socket.send(await blob.arrayBuffer());
+  sent++; bytes += blob.size;
+}
+
+function renderStats() {
+  if (!running) return;
+  const secs = (performance.now() - startedAt) / 1000;
+  const fps = sent / Math.max(secs, 0.001);
+  const kb = bytes / Math.max(sent, 1) / 1024;
+  els.stats.textContent =
+    `streaming — ${fps.toFixed(1)} fps sent\n` +
+    `${kb.toFixed(0)} KB/frame · ${sent} frames · ${skipped} dropped (slow link)`;
+}
+
+async function start() {
+  try {
+    // facingMode "environment" = rear camera, which is what the user points at the object.
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } },
+      audio: false,
+    });
+  } catch (err) {
+    // The most common cause by far is a non-secure origin: plain http:// over LAN.
+    say(`Camera unavailable: ${err.name}. If this page is not on https://, iOS will refuse the camera — ` +
+        `start the server with serve.py, which sets up HTTPS.`, true);
+    return;
+  }
+  els.preview.srcObject = stream;
+
+  socket = new WebSocket(els.url.value);
+  socket.binaryType = "arraybuffer";
+
+  socket.onopen = () => {
+    running = true;
+    sent = skipped = bytes = 0;
+    startedAt = performance.now();
+    els.toggle.textContent = "Stop";
+    say("connected to the pipeline");
+    timer = setInterval(() => { sendFrame(); renderStats(); }, 1000 / TARGET_FPS);
+  };
+  // A self-signed relay certificate that Safari has not been told to trust fails
+  // here rather than at the page load, so call that out explicitly.
+  socket.onerror = () => say(
+    `Could not reach ${els.url.value}. Open that address once in Safari and accept the ` +
+    `certificate warning, then come back and press Start.`, true);
+  socket.onclose = () => { if (running) { say("relay disconnected"); stop(); } };
+
+  // Keep the screen awake: a sleeping screen suspends capture and the stream dies.
+  try { wakeLock = await navigator.wakeLock.request("screen"); } catch { /* unsupported; harmless */ }
+}
+
+function stop() {
+  running = false;
+  clearInterval(timer); timer = null;
+  if (socket && socket.readyState === WebSocket.OPEN) socket.close();
+  socket = null;
+  if (stream) { stream.getTracks().forEach((t) => t.stop()); stream = null; }
+  els.preview.srcObject = null;
+  if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
+  els.toggle.textContent = "Start";
+  els.stats.textContent = "not streaming";
+}
+
+els.toggle.onclick = () => (running ? stop() : start());
+
+// If iOS backgrounds the tab the camera stalls; surface that instead of
+// silently sending nothing.
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden && running) say("tab backgrounded — iOS pauses the camera; keep this screen open");
+});
+</script>
+</body>
+</html>
