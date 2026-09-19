@@ -37,3 +37,15 @@ PYTHONPATH=. python vla/sim_test.py --server http://127.0.0.1:8011    # dimOS's 
 
 `sim_test.py` forces dimOS's mock OpenYAM adapter and refuses to run if it would get the real one. Result on
 2026-09-19: preflight passed, 12 chunks accepted in 4 s, and stop cancelled cleanly.
+
+## Record demos for fine-tuning
+
+```bash
+PYTHONPATH=. python vla/collect_openyam.py --real --camera-index <arm camera>   # energizes the arm; asks for 'go'
+dimos dataprep build --source <session.db> --config vla/openyam_dataprep.json --output data/datasets/openyam
+```
+
+Quest teleop moves the arm (B starts/saves an episode, Y discards), or press Enter in the terminal to start or save.
+Train on RunPod with LeRobot on the dataset, then serve the checkpoint with `policy_server.py`.
+Mock check (2026-09-19): `--mock --test` recorded 2 episodes; dataprep wrote a LeRobot v3.0 dataset of 99 frames at
+30 fps with `observation.images.wrist` (480×640×3), `observation.state` (7) and `action` (7).
