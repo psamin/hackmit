@@ -17,7 +17,7 @@ is_bottle = d.all_nouns.str.contains("bottle") | d.narration.str.contains("oil")
 gt = d[is_put & is_bottle].sort_values("t0")
 events = [json.loads(l) for l in open(f"{run}/events.jsonl")]
 stats = json.load(open(f"{run}/stats.json"))
-dur_min = stats["frames"] / 10 / 60
+dur_min = stats["frames"] / stats.get("fps", 10) / 60  # runs before --fps was recorded were all at 10
 
 placed = [e for e in events if e["type"] == "placed"]
 hit = set()

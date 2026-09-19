@@ -4,13 +4,14 @@
     python voice.py runs/live/memory.jsonl --text "where is my medicine?"
     python voice.py runs/live/memory.jsonl --arm                  # "bring me my medicine" / "stop" drive the arm
 """
-import argparse, queue, re, subprocess, sys, time
+import argparse, queue, re, shutil, subprocess, sys, time
 from pathlib import Path
 
-import mlx_whisper
 import numpy as np
-import sounddevice as sd
 
+# mlx_whisper and sounddevice are imported where they are used, not here. mlx_whisper is
+# Apple-Silicon only, so importing it at module load made the whole file unusable on the
+# team's Windows laptop -- including `--text`, which needs no microphone at all.
 STT_MODEL = "mlx-community/whisper-base.en-mlx"  # 0.05 s per question once loaded on the M3 Pro
 RATE = 16000
 FETCH = re.compile(r"\b(bring|fetch|get|grab|hand)\b.*\b(medicine|meds|pills?|bottle|it)\b", re.I)
@@ -19,6 +20,8 @@ STOP = re.compile(r"^\W*stop\b", re.I)
 
 def record():
     """Push to talk: records from the default mic between two Enter presses."""
+    import sounddevice as sd
+
     chunks = queue.Queue()
     input("Press Enter and ask your question...")
     with sd.InputStream(samplerate=RATE, channels=1, dtype="float32", callback=lambda d, *_: chunks.put(d.copy())):
@@ -44,7 +47,18 @@ def arm_command(question, url):
 
 
 def speak(text):
-    subprocess.Popen(["say", "-v", "Samantha", text])
+    """Say the answer out loud, on whichever OS this is. Printing is the fallback:
+    a demo that prints the answer is fine, one that crashes on an unknown platform is not."""
+    if sys.platform == "darwin":
+        subprocess.Popen(["say", "-v", "Samantha", text])
+    elif sys.platform == "win32":
+        # SAPI via PowerShell: no extra dependency. Single quotes are the only escape needed.
+        script = ("Add-Type -AssemblyName System.Speech; "
+                  f"(New-Object System.Speech.Synthesis.SpeechSynthesizer).Speak('{text.replace(chr(39), chr(39) * 2)}')")
+        subprocess.Popen(["powershell", "-NoProfile", "-Command", script])
+    elif shutil.which("espeak"):
+        subprocess.Popen(["espeak", text])
+    # else: main() has already printed the answer, which is enough to keep a demo going.
 
 
 def main():
@@ -55,7 +69,11 @@ def main():
     args = ap.parse_args()
 
     from vlm import ask  # needs ANTHROPIC_API_KEY in perception/.env
-    mlx_whisper.transcribe(np.zeros(RATE, np.float32), path_or_hf_repo=STT_MODEL)  # load the model before the first question
+
+    mlx_whisper = None
+    if not args.text:
+        import mlx_whisper  # Apple Silicon only; --text is the way in on other platforms
+        mlx_whisper.transcribe(np.zeros(RATE, np.float32), path_or_hf_repo=STT_MODEL)  # load before the first question
     while True:
         if args.text:
             question, t_end = args.text, time.perf_counter()
