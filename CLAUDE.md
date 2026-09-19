@@ -110,6 +110,43 @@ On a photo of ordinary (non-medicine) bottles, the same pair returned
 **water bottle ×1** and zero pill bottle.
 
 So the discrimination *works* — a generic `bottle` prompt was suppressing it.
+
+**Those numbers are from `yoloe-11s-seg.pt`. The pipeline runs `yoloe-26s-seg.pt`**, which
+downloads itself the first time you run with the default `--weights`, so it is easy to
+believe you are reproducing a measurement you are not. On the Windows laptop's real
+objects, 26s was observed labelling a **pill bottle as a water bottle** - the opposite of
+the table above. Before trusting either prompt, run the same frame through both:
+
+```bash
+python test_prompts.py --weights yoloe-11s-seg.pt        --imgsz 640 --isolate
+python test_prompts.py --weights weights/yoloe-26s-seg.pt --imgsz 640 --isolate
+```
+
+### The detector proposes, the VLM decides
+
+This is the structural answer to the mislabelling above, and it is why the split not
+holding is survivable.
+
+YOLOE has **no background or "none of these" class**. It scores your prompt list against
+each box and applies the single best-scoring one. Every detection therefore wears one of
+your labels whether or not it is that thing, and visually similar prompts get swapped.
+Raising `--conf` reduces how many boxes appear; it does not make the surviving labels
+right.
+
+So the detector's label is treated as a hint, not an answer. Each event carries a
+`targets` list - every prompt the detector could have chosen from - and `vlm.py` hands
+that to the model as its candidate set, telling it plainly that the detector cannot say
+"none of these" and confuses a pill bottle with a water bottle. The VLM picks from the
+candidates, or returns `other`. Both answers are written to `memory.jsonl`: `object` is
+the VLM's, `detector_label` is YOLOE's, so disagreements are greppable and are the real
+evidence on whether a prompt set discriminates.
+
+Verified 2026-09-19: given a frame of an obvious pill bottle and told the detector called
+it a **water bottle**, the VLM returned **pill bottle** at confidence 0.6.
+
+This is the right division of labour anyway. YOLOE's job is "something moved and came to
+rest, here"; reading a pharmacy label off a small amber cylinder is a job for a model that
+can actually read. Do not try to fix identity purely with prompt engineering.
 **Never put a generic prompt in `--targets` beside a specific one.** The old
 default was `--targets bottle`, which would have logged the demo's water-bottle
 distractor as the medication.

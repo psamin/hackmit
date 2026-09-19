@@ -77,7 +77,18 @@ In AFTER, a yellow box marks where the tracker last saw the object. If there is 
 wearer's hand activity: find the object yourself. A single AFTER frame is a snapshot of the object at rest.
 Say what happened to that object and where it ended up, in words that would help the person find it later:
 the surface it is on and the nearby landmarks (\"on the counter, left of the sink, next to the kettle\").
-If the frames do not show the object being set down, say so in `event` rather than guessing."""
+If the frames do not show the object being set down, say so in `event` rather than guessing.
+
+YOU decide what the object is, not the detector. The detector is open-vocabulary: it scores a fixed list of text
+prompts against every box and applies the single best-scoring one. It has no way to answer "none of these", so it
+always returns one of the candidates, and it confuses visually similar ones - a pill bottle against a water bottle
+especially. Its label is a hint, not a fact. You can read printed labels, caps, sizes and materials that it cannot.
+Choose from the candidate list you are given and put that in `object`; use "other" if it is genuinely none of them.
+Do not repeat the detector's guess just because it was given to you.
+
+This matters because the person may ask "where is my medication?" and act on the answer. Calling a water bottle a
+pill bottle is worse than admitting uncertainty - lower `confidence` when the identity is not clear from the
+frames."""
 
 
 class Memory(BaseModel):
@@ -98,7 +109,14 @@ def describe_event(ev, memory_path):
     content = []
     for label, path in zip(("BEFORE", "DURING", "AFTER")[-len(ev["frames"]):], ev["frames"]):
         content += [{"type": "text", "text": label}, _image(path)]
-    content.append({"type": "text", "text": f"Tracked object class: {ev['object']}. Trigger: {ev['type']}."})
+    # The candidate list is exactly what the detector was allowed to say, so it is also the
+    # set the VLM should choose from. Falls back to the detector's own label for events
+    # written by an older pipeline that did not record the targets.
+    candidates = ev.get("targets") or [c.strip() for c in str(ev["object"]).split(",")]
+    content.append({"type": "text", "text":
+                    f"Candidate objects: {', '.join(candidates)}. "
+                    f"Detector's best guess, which may be wrong: {ev['object']}. "
+                    f"Trigger: {ev['type']}."})
     t0 = time.perf_counter()
     resp = client.messages.parse(model=MODEL, max_tokens=MAX_TOKENS_MEMORY, system=SYSTEM,
                                  output_config={"effort": EFFORT},
@@ -113,7 +131,10 @@ def describe_event(ev, memory_path):
         print(f"event {ev['id']}: hit max_tokens ({MAX_TOKENS_MEMORY}); no memory written", flush=True)
         return None
     mem = {"logged_at": datetime.now().isoformat(timespec="seconds"), "video_t": ev["t"], "event_id": ev["id"],
-           "trigger": ev["type"], **resp.parsed_output.model_dump(), "frames": ev["frames"],
+           "trigger": ev["type"], **resp.parsed_output.model_dump(),
+           # Kept next to the VLM's own answer so disagreements are greppable: they are the
+           # evidence for whether the prompt set discriminates on real objects.
+           "detector_label": ev["object"], "frames": ev["frames"],
            "vlm_latency_s": round(latency, 2), "input_tokens": resp.usage.input_tokens, "output_tokens": resp.usage.output_tokens}
     with _write_lock, open(memory_path, "a") as f:
         f.write(json.dumps(mem) + "\n")

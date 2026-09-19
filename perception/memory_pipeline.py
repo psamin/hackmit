@@ -276,7 +276,11 @@ def main():
         ev = {"id": n_events, "type": fire, "object": n, "track": i, "t": round(t, 2),
               "t_before": None if snapshot else round(t_before, 2),
               "t_during": None if snapshot else round(t_during, 2),
-              "box": None if b is None else [round(float(v), 1) for v in b]}
+              "box": None if b is None else [round(float(v), 1) for v in b],
+              # Every prompt the detector could have chosen from. The VLM gets this as its
+              # candidate set: the detector has no "none of these" option and confuses
+              # visually similar prompts, so its single label is a hint, not an answer.
+              "targets": list(targets)}
         d = out / "events" / f"{n_events:03d}_{fire}_{t:07.1f}"
         d.mkdir(exist_ok=True)
         ev["frames"] = []

@@ -45,6 +45,10 @@ EVENT SCHEMA — one JSON object per line of events.jsonl
                     at which the event fired.
   t_before   float  timestamp of the BEFORE frame; null on a single-frame event.
   t_during   float  timestamp of the DURING frame; null on a single-frame event.
+  targets    list   Every prompt the detector could have chosen from. The VLM
+                    receives this as its candidate set and decides which one the
+                    object actually is; `object` above is only the detector's
+                    single best-scoring guess, and it cannot say "none of these".
   box        list   [x1, y1, x2, y2] in the 640px-wide processed frame, or null.
                     The AFTER frame already has this drawn on it in yellow.
   frames     list   Paths to the saved JPEGs, in order: BEFORE, DURING, AFTER.
