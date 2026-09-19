@@ -218,6 +218,9 @@ def record(args) -> None:
                 keys.press("enter")  # save
                 saved += 1
                 print(f"[{rep + 1}/{args.reps}] {path}: saved ({duration:.1f} s)", flush=True)
+                if args.hold:  # stay at the lift so the grasp is visible before anything releases
+                    print(f"holding at the lift for {args.hold:.0f} s", flush=True)
+                    time.sleep(args.hold)
                 if after:  # the preset hand-over: played, not recorded
                     play(after)
                 elif args.release:  # no hand-over yet: open in place so the bottle can be taken, then go home
@@ -252,6 +255,7 @@ def main() -> None:
     r.add_argument("--seed", type=int, default=0)
     r.add_argument("--auto-reset", type=float, default=None, help="seconds between reps instead of waiting for Enter")
     r.add_argument("--after", default=None, help="preset hand-over poses to play after each pick, not recorded")
+    r.add_argument("--hold", type=float, default=2.0, help="seconds to hold the bottle up at the lift before releasing")
     r.add_argument("--release", action="store_true",
                    help="no hand-over yet: after each pick open the gripper in place, then go home (not recorded)")
     args = ap.parse_args()
