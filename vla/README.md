@@ -62,3 +62,13 @@ Checked on the laptop (CPU, 2026-09-19): the same `lerobot-train` flags trained 
 ran it on the mock arm (3 chunks accepted in 8 s, clean stop). ACT's default is 100 action steps per chunk, 3.3 s
 open loop at 30 fps. Pass `--policy.n_action_steps` lower for faster reaction; dimOS's runtime doesn't support
 temporal ensembling.
+
+## Demo day (`run_policy.py`)
+
+```bash
+PYTHONPATH=. python vla/run_policy.py --real --server https://<pod-id>-8000.proxy.runpod.net --camera-index <arm camera>
+```
+
+Type `go`, then `p` (preflight: checks the server, the coordinator and fresh observations, moves nothing), `s`
+(start), `x` (stop), `q` (quit: the motors go limp, so support the arm). Mock check: preflight passed, 12 chunks in
+4 s, clean stop and quit; `--real` without `go` exits before connecting.
