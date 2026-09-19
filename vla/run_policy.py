@@ -4,9 +4,43 @@
     PYTHONPATH=. python vla/run_policy.py --mock --server http://127.0.0.1:8011     # mock arm + synthetic camera
 
 Terminal controls: p = preflight (moves nothing), s = start, x = stop, q = quit. Quitting disables the motors and the
-arm has no brakes: support it first.
+arm has no brakes: support it first. Other processes (the voice loop) use vla/arm_client.py, served on 127.0.0.1:8020.
 """
-import argparse, sys
+import argparse, json, socketserver, sys, threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+
+def serve_control(actions, status, port):
+    """Localhost-only HTTP control: POST /preflight, /start, /stop and GET /status, each returning the status."""
+
+    class Handler(BaseHTTPRequestHandler):
+        def reply(self, obj):
+            body = json.dumps(obj).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            self.reply(status()) if self.path == "/status" else self.send_error(404)
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            action = actions.get(self.path.strip("/"))
+            self.reply(action()) if action else self.send_error(404)
+
+        def log_message(self, *args):
+            pass
+
+    class Server(ThreadingHTTPServer):
+        def server_bind(self):  # skip HTTPServer's reverse-DNS lookup, which can hang for minutes on some networks
+            socketserver.TCPServer.server_bind(self)
+            self.server_name, self.server_port = "127.0.0.1", port
+
+    server = Server(("127.0.0.1", port), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
 
 
 def main() -> None:
@@ -18,6 +52,7 @@ def main() -> None:
     ap.add_argument("--task", default="pick up the pill bottle")
     ap.add_argument("--fps", type=float, default=30.0, help="the training dataset's rate")
     ap.add_argument("--camera-index", type=int, default=0, help="--real: OpenCV index of the arm camera")
+    ap.add_argument("--control-port", type=int, default=8020, help="localhost control for arm_client.py; 0 = off")
     args = ap.parse_args()
 
     from dimos.core.global_config import global_config
@@ -65,6 +100,10 @@ def main() -> None:
     coordinator = ModuleCoordinator.build(blueprint)
     policy = coordinator.get_instance(RemotePolicyModule)
     actions = {"p": policy.preflight_rollout, "s": policy.start_rollout, "x": policy.stop_rollout}
+    if args.control_port:
+        serve_control({"preflight": policy.preflight_rollout, "start": policy.start_rollout,
+                       "stop": policy.stop_rollout}, policy.rollout_status, args.control_port)
+        print(f"arm control on http://127.0.0.1:{args.control_port}", flush=True)
     try:
         for line in sys.stdin if not sys.stdin.isatty() else iter(lambda: input("p/s/x/q: "), None):
             key = line.strip().lower()
