@@ -6,7 +6,8 @@ variations while the camera and joint states are recorded.
     PYTHONPATH=. python vla/scripted_demos.py record spots/*.json --real --camera-index 1 --reps 10
     PYTHONPATH=. python vla/scripted_demos.py record spots/*.json --mock --auto-reset 0.5  # no hardware
 
-Teach each spot's pick, e.g. `home o`, `above o`, `grasp c`, `lift c`, and one shared hand-over, e.g. `handover c`,
+The first pose is home: the arm drives there before each episode starts, so every recording begins at the same pose and
+only the pick itself is recorded. Teach each spot's pick, e.g. `home o`, `above o`, `grasp c`, `lift c`, and one shared hand-over, e.g. `handover c`,
 `release o`, `home o`: the gripper opens or closes in place at the pose where its state changes. `record --after
 handover.json` plays the hand-over after each saved pick without recording it (before a hand-over is taught, `--release`
 opens the gripper in place and returns home instead), so ACT learns only the pick (table views)
@@ -19,6 +20,8 @@ from datetime import datetime
 import numpy as np
 
 ARM_IDS = (1, 2, 3, 4, 5, 6)  # OpenYAM joints 1-3 are DM4340, 4-6 DM4310; feedback on send ID + 0x10
+GRIPPER_S = 2.0        # the gripper closes in place over this long: the motor is slower than the arm
+GRIPPER_SETTLE_S = 0.5  # hold after it closes, before lifting
 # Joint limits (rad) from dimOS's yam.urdf; replay noise never pushes a target past them.
 LIMITS = np.array([(-2.618, 3.142), (0.0, 3.665), (0.0, 3.142), (-1.693, 1.571), (-1.571, 1.571), (-2.094, 2.094)])
 
@@ -117,8 +120,10 @@ def build_trajectory(joint_names, start, poses, speed, noise, rng):
         t += max(float(np.abs(target - arm).max()) / speed, 0.5)
         arm = target
         points.append(TrajectoryPoint(positions=[*arm, gripper], velocities=zeros, time_from_start=t))
-        if pose["gripper"] != gripper:
-            gripper, t = pose["gripper"], t + 1.0
+        if pose["gripper"] != gripper:  # close/open in place, then settle before moving on
+            gripper, t = pose["gripper"], t + GRIPPER_S
+            points.append(TrajectoryPoint(positions=[*arm, gripper], velocities=zeros, time_from_start=t))
+            t += GRIPPER_SETTLE_S
             points.append(TrajectoryPoint(positions=[*arm, gripper], velocities=zeros, time_from_start=t))
     return JointTrajectory(joint_names=list(joint_names), points=points), t
 
@@ -179,7 +184,7 @@ def record(args) -> None:
     rng = np.random.default_rng(args.seed)
     saved = 0
 
-    def play(motion):
+    def play(motion):  # noqa: F811 - defined before the loop that uses it
         """Run poses from the current state, unrecorded and without noise; wait until done."""
         positions = control.get_joint_positions()
         trajectory, duration = build_trajectory(OPENYAM_JOINTS, [positions[n] for n in OPENYAM_JOINTS], motion,
@@ -196,10 +201,11 @@ def record(args) -> None:
                     input(f"[{rep + 1}/{args.reps}] Put the bottle on {path}, then press Enter: ")
                 else:
                     time.sleep(args.auto_reset)
+                play([poses[0]])  # drive to home first, unrecorded: every episode then starts from the same pose
                 for _ in range(3):  # the start must match the live state; retry if the arm settled in between
                     positions = control.get_joint_positions()
                     start = [positions[name] for name in OPENYAM_JOINTS]
-                    trajectory, duration = build_trajectory(OPENYAM_JOINTS, start, poses, args.speed, args.noise, rng)
+                    trajectory, duration = build_trajectory(OPENYAM_JOINTS, start, poses[1:], args.speed, args.noise, rng)
                     keys.press("enter")  # start the episode just before the motion
                     result = control.execute_trajectory(trajectory)
                     if result.status is TrajectoryExecutionStatus.ACCEPTED:
