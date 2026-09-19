@@ -7,7 +7,7 @@ Episodes: Quest B starts/saves and Y discards (dimOS default), or type in this t
 discards, q + Enter quits. The session DB path is printed; turn it into a LeRobot dataset with
     dimos dataprep build -s <session.db> -c vla/openyam_dataprep.json
 """
-import argparse, time
+import argparse, functools, time
 from datetime import datetime
 
 from dimos.core.core import rpc
@@ -64,7 +64,8 @@ def main() -> None:
         from dimos.hardware.sensors.camera.module import CameraModule
         from dimos.hardware.sensors.camera.webcam import Webcam
 
-        camera = CameraModule.blueprint(hardware=Webcam(camera_index=args.camera_index, width=640, height=480, fps=30.0))
+        camera = CameraModule.blueprint(  # a factory: dimOS builds the webcam inside its worker process
+            hardware=functools.partial(Webcam, camera_index=args.camera_index, width=640, height=480, fps=30.0))
 
     db = args.db or str(RECORDINGS_DIR / f"session_openyam_{datetime.now():%Y%m%d_%H%M%S}.db")
     blueprint = autoconnect(

@@ -13,7 +13,7 @@ opens the gripper in place and returns home instead), so ACT learns only the pic
 and run_policy.py --handover plays the same preset motion. Then `dimos dataprep build --source <session.db> --config
 vla/openyam_dataprep.json` and `vla/runpod.sh train`.
 """
-import argparse, json, time
+import argparse, functools, json, time
 from datetime import datetime
 
 import numpy as np
@@ -158,7 +158,8 @@ def record(args) -> None:
         from dimos.hardware.sensors.camera.module import CameraModule
         from dimos.hardware.sensors.camera.webcam import Webcam
 
-        camera = CameraModule.blueprint(hardware=Webcam(camera_index=args.camera_index, width=640, height=480, fps=30.0))
+        camera = CameraModule.blueprint(  # a factory: dimOS builds the webcam inside its worker process
+            hardware=functools.partial(Webcam, camera_index=args.camera_index, width=640, height=480, fps=30.0))
 
     db = args.db or str(RECORDINGS_DIR / f"session_openyam_scripted_{datetime.now():%Y%m%d_%H%M%S}.db")
     blueprint = autoconnect(
