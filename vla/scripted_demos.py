@@ -2,6 +2,7 @@
 variations while the camera and joint states are recorded.
 
     python vla/scripted_demos.py teach spots/left.json                                    # motors stay disabled
+    python vla/scripted_demos.py check spots/left.json                                    # gripper path, no hardware
     PYTHONPATH=. python vla/scripted_demos.py record spots/*.json --real --camera-index 1 --reps 10
     PYTHONPATH=. python vla/scripted_demos.py record spots/*.json --mock --auto-reset 0.5  # no hardware
 
@@ -18,6 +19,8 @@ from datetime import datetime
 import numpy as np
 
 ARM_IDS = (1, 2, 3, 4, 5, 6)  # OpenYAM joints 1-3 are DM4340, 4-6 DM4310; feedback on send ID + 0x10
+# Joint limits (rad) from dimOS's yam.urdf; replay noise never pushes a target past them.
+LIMITS = np.array([(-2.618, 3.142), (0.0, 3.665), (0.0, 3.142), (-1.693, 1.571), (-1.571, 1.571), (-2.094, 2.094)])
 
 
 def teach(path: str) -> None:
@@ -52,6 +55,52 @@ def teach(path: str) -> None:
     print(f"saved {len(poses)} poses to {path}")
 
 
+def check(path: str) -> None:
+    """Where the gripper tip goes during the replay, from dimOS's OpenYAM model (the one it plans with)."""
+    import pinocchio as pin
+    from dimos.robot.manipulators.openyam.config import OPENYAM_MODEL_PATH
+
+    model = pin.buildModelFromUrdf(str(OPENYAM_MODEL_PATH))
+    data, tip = model.createData(), model.getFrameId("gripper_tip")
+
+    def fk(q6):
+        q = pin.neutral(model)
+        q[:6] = q6
+        pin.framesForwardKinematics(model, data, q)
+        return data.oMf[tip].translation * 100  # cm
+
+    poses, warnings = json.load(open(path))["poses"], []
+    print(f"{path}: " + " -> ".join(f"{p['name']} {'o' if p['gripper'] else 'c'}" for p in poses))
+    for p in poses:
+        q = np.asarray(p["q"])
+        x, y, z = fk(q)
+        margin = np.minimum(q - LIMITS[:, 0], LIMITS[:, 1] - q)
+        print(f"  {p['name']:9s} tip x {x:6.1f}  y {y:6.1f}  height {z:6.1f} cm   nearest limit: joint {margin.argmin() + 1} "
+              f"({margin.min():.2f} rad)")
+        if margin.min() < 0.05:
+            where = f"{-margin.min():.2f} rad past" if margin.min() < 0 else f"{margin.min():.2f} rad from"
+            warnings.append(f"{p['name']}: joint {margin.argmin() + 1} is {where} its limit; move it off")
+    for a, b in zip(poses, poses[1:]):
+        qa, qb = np.asarray(a["q"]), np.asarray(b["q"])
+        path_pts = np.array([fk(qa + t * (qb - qa)) for t in np.linspace(0, 1, 41)])
+        start, end = path_pts[0], path_pts[-1]
+        line = end - start
+        off = max(np.linalg.norm(np.cross(pt - start, line)) / max(np.linalg.norm(line), 1e-6) for pt in path_pts)
+        print(f"  {a['name']:>9s} -> {b['name']:<9s} tip moves {np.linalg.norm(line):5.1f} cm, "
+              f"{line[2]:+5.1f} cm up/down, {off:4.1f} cm off a straight line")
+        if a["gripper"] and not b["gripper"]:  # the approach into the grasp
+            side = np.linalg.norm(line[:2])
+            if side > 3.0:
+                warnings.append(f"{a['name']} is {side:.0f} cm to the side of {b['name']}: put it directly over the bottle")
+            if line[2] > -2.0:
+                warnings.append(f"{a['name']} -> {b['name']} doesn't go down; the approach should come from above")
+        if not a["gripper"] and not b["gripper"] and poses.index(a) == next(
+                (i for i, p in enumerate(poses) if not p["gripper"]), None):  # the move right after the grasp
+            if line[2] < 3.0:
+                warnings.append(f"{b['name']} rises only {line[2]:+.1f} cm after {a['name']}; lift straight up ~10 cm")
+    print("\n".join(f"  WARNING: {w}" for w in warnings) if warnings else "  OK: ready to test")
+
+
 def build_trajectory(joint_names, start, poses, speed, noise, rng):
     """Joint-space path from `start` through the taught poses. The arm moves with the gripper held, then the gripper
     changes in place. Poses where the gripper changes (grasp, release) are exact; the rest get +-noise rad per joint."""
@@ -64,7 +113,7 @@ def build_trajectory(joint_names, start, poses, speed, noise, rng):
     for pose in poses:
         target = np.asarray(pose["q"], float)
         if pose["gripper"] == gripper:
-            target = target + rng.uniform(-noise, noise, target.shape)
+            target = np.clip(target + rng.uniform(-noise, noise, target.shape), LIMITS[:, 0], LIMITS[:, 1])
         t += max(float(np.abs(target - arm).max()) / speed, 0.5)
         arm = target
         points.append(TrajectoryPoint(positions=[*arm, gripper], velocities=zeros, time_from_start=t))
@@ -181,6 +230,8 @@ def main() -> None:
     sub = ap.add_subparsers(dest="cmd", required=True)
     t = sub.add_parser("teach", help="pose the disabled arm by hand and save one spot's pick")
     t.add_argument("spot")
+    c = sub.add_parser("check", help="where the gripper tip goes for a taught file (arm model, no hardware)")
+    c.add_argument("spot")
     r = sub.add_parser("record", help="replay taught picks with small variations and record demos")
     r.add_argument("spots", nargs="+")
     mode = r.add_mutually_exclusive_group(required=True)
@@ -197,7 +248,7 @@ def main() -> None:
     r.add_argument("--release", action="store_true",
                    help="no hand-over yet: after each pick open the gripper in place, then go home (not recorded)")
     args = ap.parse_args()
-    teach(args.spot) if args.cmd == "teach" else record(args)
+    {"teach": lambda: teach(args.spot), "check": lambda: check(args.spot), "record": lambda: record(args)}[args.cmd]()
 
 
 if __name__ == "__main__":
