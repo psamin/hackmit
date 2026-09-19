@@ -1,0 +1,17 @@
+{
+  "source": "SET_WITH --source",
+  "episodes": {"extractor": "episode_status", "status_stream": "status"},
+  "observation": {
+    "wrist": {"stream": "color_image", "field": "data"},
+    "joint_state": {"stream": "coordinator_joint_state", "field": "position"}
+  },
+  "action": {
+    "joint_target": {"stream": "coordinator_joint_state", "field": "position"}
+  },
+  "sync": {"anchor": "wrist", "rate_hz": 30.0, "tolerance_ms": 80.0, "action_shift": 1},
+  "output": {
+    "format": "lerobot",
+    "path": "data/datasets/openyam",
+    "metadata": {"robot": "openyam", "default_task_label": "pick up the pill bottle"}
+  }
+}
