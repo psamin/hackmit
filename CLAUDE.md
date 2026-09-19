@@ -122,6 +122,36 @@ python test_prompts.py --weights yoloe-11s-seg.pt        --imgsz 640 --isolate
 python test_prompts.py --weights weights/yoloe-26s-seg.pt --imgsz 640 --isolate
 ```
 
+### Wheelchair mount: drop `--static-camera`, keep the arm logic
+
+The deployment target is a camera **mounted on the user's wheelchair**, looking out, with
+the user's arm reaching in to set things down. That is the head-worn case, not the
+desk-webcam case:
+
+- **Keep the arm logic on.** The arm placing the pill bottle is the event we exist to
+  catch. `--no-arm` is for testing at a laptop, where the webcam sees your whole torso.
+- **`--static-camera` is now actively dangerous and must be dropped.** It replaces the
+  ego-motion homography with a raw centre delta, so while the chair rolls, every
+  stationary object's centre moves across the frame. At 3 fps a modest roll clears both
+  `MOVE_THR` and `ARM_DISP`, so every visible target arms - and the moment the chair
+  stops, they all "come to rest" together and fire a burst of false `placed` events, one
+  per object. (Derived from the trigger code, not yet measured on a real chair.)
+
+Ego-motion is cheap enough to leave on: measured **13-39 ms/frame** on the Windows laptop
+(39 ms at imgsz 640), against 7.6 ms on the Mac.
+
+**But a moving camera argues against the low frame rate.** The homography is fitted with
+pyramidal Lucas-Kanade optical flow, which has a limited search radius. At 3 fps the chair
+has moved for 333 ms between frames, and if the fit fails the code leaves `step_vec` at
+zero - deliberately conservative, so the failure is silent blindness rather than false
+events. Higher fps keeps the inter-frame displacement inside what LK can track. **5 fps at
+imgsz 480 is the recommended starting point for the chair**; 3 fps / 640 was the right
+answer only for a camera that does not move.
+
+Mitigating factor: put-downs happen while the chair is *stopped*, when the camera is
+effectively static anyway. The risk is confined to what happens during and just after
+motion.
+
 ### `--no-arm` is required when the camera faces the user
 
 The arm rules assume a **head-worn** camera: a `person` box running off the bottom edge
