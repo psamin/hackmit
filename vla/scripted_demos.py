@@ -56,6 +56,48 @@ def teach(path: str) -> None:
         robot.__exit__(None, None, None)
     json.dump({"poses": poses}, open(path, "w"), indent=1)
     print(f"saved {len(poses)} poses to {path}")
+    warn_poses(path, poses)
+
+
+def warn_poses(path: str, poses: list) -> list:
+    """What would otherwise quietly ruin a recording: a pose past a joint limit, or a lift that is really a sag.
+
+    Joint 2 grows as the arm comes down - 1.03 hovering, 1.53 at the bottle, 2.36 collapsed at rest - so a pose after
+    the grasp whose joint 2 is no smaller than the grasp's does not rise.
+    """
+    warnings, grasp = [], next((i for i, p in enumerate(poses) if not p["gripper"]), None)
+    for i, pose in enumerate(poses):
+        q = np.asarray(pose["q"], float)
+        past = [j + 1 for j in range(len(LIMITS)) if not LIMITS[j, 0] <= q[j] <= LIMITS[j, 1]]
+        if past:
+            warnings.append(f"{pose['name']}: joint {past} past the URDF limit")
+        if grasp is not None and i > grasp and q[1] >= poses[grasp]["q"][1]:
+            warnings.append(f"{pose['name']}: joint 2 is {q[1] - poses[grasp]['q'][1]:+.2f} rad against the grasp, so "
+                            f"it is no higher - the arm sagged while you let go to type. Fix it with: "
+                            f"python vla/scripted_demos.py lift {path}")
+    for warning in warnings:
+        print(f"  WARNING {path}: {warning}")
+    return warnings
+
+
+def lift(path: str, rad: float) -> None:
+    """Replace the pose after the grasp with the grasp raised by `rad` on joint 2, the shoulder.
+
+    A lift cannot be taught by hand: the motors are disabled while teaching, so the arm drops to rest the moment you
+    let go to type its name, and that sag is what gets saved. Smaller joint 2 is higher, and holding the wrist at its
+    grasp value keeps the bottle upright.
+    """
+    poses = json.load(open(path))["poses"]
+    grasp = next(i for i, p in enumerate(poses) if not p["gripper"])
+    q = list(poses[grasp]["q"])
+    q[1] = round(q[1] - rad, 4)
+    old = poses[grasp + 1]["q"] if grasp + 1 < len(poses) else None
+    poses[grasp + 1:grasp + 2] = [{"name": "lift", "q": q, "gripper": 0.0}]
+    json.dump({"poses": poses}, open(path, "w"), indent=1)
+    print(f"grasp {poses[grasp]['q']}\nlift  {q}  (joint 2 raised {rad:.2f} rad)")
+    if old:
+        print(f"was   {old}")
+    warn_poses(path, poses)
 
 
 def check(path: str) -> None:
@@ -115,8 +157,9 @@ def build_trajectory(joint_names, start, poses, speed, noise, rng):
     points = [TrajectoryPoint(positions=[*arm, gripper], velocities=zeros, time_from_start=0.0)]
     for pose in poses:
         target = np.asarray(pose["q"], float)
-        if pose["gripper"] == gripper:
-            target = np.clip(target + rng.uniform(-noise, noise, target.shape), LIMITS[:, 0], LIMITS[:, 1])
+        if pose["gripper"] == gripper:  # bound the noise, but never move the taught pose itself
+            lo, hi = np.minimum(LIMITS[:, 0], target), np.maximum(LIMITS[:, 1], target)
+            target = np.clip(target + rng.uniform(-noise, noise, target.shape), lo, hi)
         t += max(float(np.abs(target - arm).max()) / speed, 0.5)
         arm = target
         points.append(TrajectoryPoint(positions=[*arm, gripper], velocities=zeros, time_from_start=t))
@@ -146,6 +189,8 @@ def record(args) -> None:
     from vla.collect_openyam import TerminalKeys
 
     spots = {path: json.load(open(path))["poses"] for path in args.spots}
+    for path, poses in spots.items():
+        warn_poses(path, poses)
     after = json.load(open(args.after))["poses"] if args.after else None
     hardware = openyam_hardware()
     if args.mock and hardware.adapter_type != "mock_whole_body":
@@ -240,6 +285,9 @@ def main() -> None:
     sub = ap.add_subparsers(dest="cmd", required=True)
     t = sub.add_parser("teach", help="pose the disabled arm by hand and save one spot's pick")
     t.add_argument("spot")
+    l = sub.add_parser("lift", help="derive the lift from the grasp, because a lift cannot be taught by hand")
+    l.add_argument("spot")
+    l.add_argument("--rad", type=float, default=0.35, help="radians to raise joint 2 above the grasp")
     c = sub.add_parser("check", help="where the gripper tip goes for a taught file (arm model, no hardware)")
     c.add_argument("spot")
     r = sub.add_parser("record", help="replay taught picks with small variations and record demos")
@@ -259,7 +307,8 @@ def main() -> None:
     r.add_argument("--release", action="store_true",
                    help="no hand-over yet: after each pick open the gripper in place, then go home (not recorded)")
     args = ap.parse_args()
-    {"teach": lambda: teach(args.spot), "check": lambda: check(args.spot), "record": lambda: record(args)}[args.cmd]()
+    {"teach": lambda: teach(args.spot), "lift": lambda: lift(args.spot, args.rad), "check": lambda: check(args.spot),
+     "record": lambda: record(args)}[args.cmd]()
 
 
 if __name__ == "__main__":
