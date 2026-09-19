@@ -187,15 +187,17 @@ put the duration in `*_S` and let the startup conversion do the rest.
 
 ### What a VLM call actually costs
 
-Frames are 640 px wide (`PROC_W`), so about 640x480 -> ~410 image tokens each
-(`w*h/750`). Per event, on Sonnet at $2/$10 per MTok:
+**Measured** on `claude-sonnet-5` ($2/$10 per MTok), 640x480 frames, 2026-09-19:
 
-| event | images | input tok | output tok | cost |
-|---|---|---|---|---|
-| `placed` | 3 | ~1,450 | ~250 | ~$0.005 |
-| `sighted` | 1 | ~630 | ~250 | ~$0.004 |
+| event | images | input tok | output tok | latency | cost |
+|---|---|---|---|---|---|
+| `placed` | 3 | 1,975 | 79 | 2.7 s | $0.0047 |
+| `sighted` | 1 | 1,132 | 75 | 3.3 s | $0.0030 |
 
-A ~30-event demo is well under a dollar. Do not guess at this: every call records
+A ~30-event demo is about **$0.12**. Note the single-image call is 1,132 tokens,
+not the ~600 a naive `w*h/750` estimate gives: the system prompt and the injected
+`Memory` JSON schema are most of the difference, and they are paid on every call.
+Output is tiny (~75 tokens) because the schema is small and effort is `low`. Do not guess at this: every call records
 `input_tokens` / `output_tokens` in `memory.jsonl`, and a run totals them into
 `stats.json` as `vlm_calls` / `vlm_input_tokens` / `vlm_output_tokens` /
 `vlm_cost_usd`. **There is no agent loop anywhere in this system** -- one event is one
