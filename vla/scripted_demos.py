@@ -7,7 +7,8 @@ variations while the camera and joint states are recorded.
 
 Teach each spot's pick, e.g. `home o`, `above o`, `grasp c`, `lift c`, and one shared hand-over, e.g. `handover c`,
 `release o`, `home o`: the gripper opens or closes in place at the pose where its state changes. `record --after
-handover.json` plays the hand-over after each saved pick without recording it, so ACT learns only the pick (table views)
+handover.json` plays the hand-over after each saved pick without recording it (before a hand-over is taught, `--release`
+opens the gripper in place and returns home instead), so ACT learns only the pick (table views)
 and run_policy.py --handover plays the same preset motion. Then `dimos dataprep build --source <session.db> --config
 vla/openyam_dataprep.json` and `vla/runpod.sh train`.
 """
@@ -127,6 +128,15 @@ def record(args) -> None:
     control, keys = coordinator.get_instance(ControlCoordinator), coordinator.get_instance(TerminalKeys)
     rng = np.random.default_rng(args.seed)
     saved = 0
+
+    def play(motion):
+        """Run poses from the current state, unrecorded and without noise; wait until done."""
+        positions = control.get_joint_positions()
+        trajectory, duration = build_trajectory(OPENYAM_JOINTS, [positions[n] for n in OPENYAM_JOINTS], motion,
+                                                args.speed, 0.0, rng)
+        if control.execute_trajectory(trajectory).status is TrajectoryExecutionStatus.ACCEPTED:
+            time.sleep(duration + 0.5)
+
     print(f"recording to {db}", flush=True)
     try:
         time.sleep(2.0)  # let the camera and joint-state streams start
@@ -153,11 +163,13 @@ def record(args) -> None:
                 saved += 1
                 print(f"[{rep + 1}/{args.reps}] {path}: saved ({duration:.1f} s)", flush=True)
                 if after:  # the preset hand-over: played, not recorded
-                    positions = control.get_joint_positions()
-                    handover, duration = build_trajectory(OPENYAM_JOINTS, [positions[n] for n in OPENYAM_JOINTS],
-                                                          after, args.speed, 0.0, rng)
-                    if control.execute_trajectory(handover).status is TrajectoryExecutionStatus.ACCEPTED:
-                        time.sleep(duration + 0.5)
+                    play(after)
+                elif args.release:  # no hand-over yet: open in place so the bottle can be taken, then go home
+                    arm_now = [control.get_joint_positions()[n] for n in OPENYAM_JOINTS[:-1]]
+                    print("gripper opening: take the bottle", flush=True)
+                    play([{"name": "release", "q": arm_now, "gripper": 1.0}])
+                    time.sleep(2.0)
+                    play([poses[0]])
     finally:
         control.cancel_trajectory()
         coordinator.stop()  # the recorder flushes the DB on shutdown
@@ -182,6 +194,8 @@ def main() -> None:
     r.add_argument("--seed", type=int, default=0)
     r.add_argument("--auto-reset", type=float, default=None, help="seconds between reps instead of waiting for Enter")
     r.add_argument("--after", default=None, help="preset hand-over poses to play after each pick, not recorded")
+    r.add_argument("--release", action="store_true",
+                   help="no hand-over yet: after each pick open the gripper in place, then go home (not recorded)")
     args = ap.parse_args()
     teach(args.spot) if args.cmd == "teach" else record(args)
 
