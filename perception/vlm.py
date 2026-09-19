@@ -25,7 +25,8 @@ client = anthropic.Anthropic()
 
 SYSTEM = """You are the memory module of an assistive device for someone with memory and mobility limitations.
 You get three frames from a head-worn camera: BEFORE, DURING and AFTER a possible event involving a tracked object.
-In AFTER, a yellow box marks where the tracker last saw the object.
+In AFTER, a yellow box marks where the tracker last saw the object. If there is no box, the trigger was the
+wearer's hand activity: find the object yourself. A single AFTER frame is a snapshot of the object at rest.
 Say what happened to that object and where it ended up, in words that would help the person find it later:
 the surface it is on and the nearby landmarks (\"on the counter, left of the sink, next to the kettle\").
 If the frames do not show the object being set down, say so in `event` rather than guessing."""
@@ -47,7 +48,7 @@ def _image(path):
 
 def describe_event(ev, memory_path):
     content = []
-    for label, path in zip(("BEFORE", "DURING", "AFTER"), ev["frames"]):
+    for label, path in zip(("BEFORE", "DURING", "AFTER")[-len(ev["frames"]):], ev["frames"]):
         content += [{"type": "text", "text": label}, _image(path)]
     content.append({"type": "text", "text": f"Tracked object class: {ev['object']}. Trigger: {ev['type']}."})
     t0 = time.perf_counter()
@@ -67,8 +68,18 @@ def describe_event(ev, memory_path):
 
 
 def ask(question, memory_path):
-    """Few memories at demo scale, so all of them go in the prompt: no vector DB needed yet."""
-    memories = [json.loads(l) for l in open(memory_path)]
+    """Few memories at demo scale, so all of them go in the prompt: no vector DB needed yet.
+    A last-seen snapshot newer than every memory is described first (one VLM call, only when asked)."""
+    memory_path = Path(memory_path)
+    memories = [json.loads(l) for l in open(memory_path)] if memory_path.exists() else []
+    newest = max((m["video_t"] for m in memories), default=float("-inf"))
+    for snap in sorted((memory_path.parent / "last_seen").glob("*.json")):
+        s = json.loads(snap.read_text())
+        if s["t"] > newest:
+            m = describe_event({"id": "last_seen", "t": s["t"], "type": "last_seen", "object": s["object"],
+                                "frames": [s["frame"]]}, memory_path)
+            memories += [m] if m else []
+    memories = [m for m in memories if m["event"] not in ("still_in_hand", "no_change")]
     lines = [f"- {m['logged_at']} (video {m['video_t']}s): {m['event']} {m['object']}: {m['location_description']} (confidence {m['confidence']})"
              for m in memories]
     t0 = time.perf_counter()
