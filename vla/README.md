@@ -49,3 +49,16 @@ Quest teleop moves the arm (B starts/saves an episode, Y discards), or press Ent
 Train on RunPod with LeRobot on the dataset, then serve the checkpoint with `policy_server.py`.
 Mock check (2026-09-19): `--mock --test` recorded 2 episodes; dataprep wrote a LeRobot v3.0 dataset of 99 frames at
 30 fps with `observation.images.wrist` (480×640×3), `observation.state` (7) and `action` (7).
+
+## Train and serve (`runpod.sh`)
+
+```bash
+bash vla/runpod.sh train /workspace/openyam act        # or smolvla; STEPS, BATCH, DEVICE override defaults
+bash vla/runpod.sh serve outputs/act/checkpoints/last/pretrained_model
+```
+
+Checked on the laptop (CPU, 2026-09-19): the same `lerobot-train` flags trained ACT for 10 steps on the mock dataset;
+`policy_server.py` loaded the checkpoint through LeRobot (92 ms inference, 112 ms round trip on CPU); `sim_test.py`
+ran it on the mock arm (3 chunks accepted in 8 s, clean stop). ACT's default is 100 action steps per chunk, 3.3 s
+open loop at 30 fps. Pass `--policy.n_action_steps` lower for faster reaction; dimOS's runtime doesn't support
+temporal ensembling.
