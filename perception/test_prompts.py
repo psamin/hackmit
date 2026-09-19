@@ -101,9 +101,11 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--image", help="test one photo instead of the webcam")
     ap.add_argument("--camera", type=int, default=0, help="camera index (default 0)")
-    ap.add_argument("--weights", default="yoloe-11s-seg.pt", help="downloads automatically if absent")
+    ap.add_argument("--weights", default="yoloe-11s-seg.pt",
+                    help="downloads automatically if absent; the pipeline runs weights/yoloe-26s-seg.pt, "
+                         "so re-check a prompt there before trusting it in a demo")
     ap.add_argument("--prompts", default=",".join(DEFAULT_PROMPTS), help="comma-separated")
-    ap.add_argument("--conf", type=float, default=0.10, help="same default the pipeline uses")
+    ap.add_argument("--conf", type=float, default=0.30, help="same default the pipeline uses")
     ap.add_argument("--imgsz", type=int, default=416, help="416 gives ~9fps on CPU; 640 is more accurate but ~3.5fps")
     ap.add_argument("--device", default=None, help="mps/cuda/cpu; default: best available")
     ap.add_argument("--isolate", action="store_true", help="also print the per-prompt isolated report")

@@ -129,9 +129,10 @@ def main():
     ap.add_argument("--labels", help="YOLO-format label dir, enables the recall check")
     ap.add_argument("--map", default="", help='prompt=class_id pairs, e.g. "cell phone=67,bottle=39"')
     ap.add_argument("--prompts", default="pill bottle,water bottle,keys,phone,glasses")
-    ap.add_argument("--weights", default="yoloe-11s-seg.pt")
+    ap.add_argument("--weights", default="yoloe-11s-seg.pt",
+                    help="downloads automatically if absent; the pipeline runs weights/yoloe-26s-seg.pt")
     ap.add_argument("--imgsz", type=int, default=416)
-    ap.add_argument("--conf", type=float, default=0.10)
+    ap.add_argument("--conf", type=float, default=0.30, help="the pipeline default; only affects --labels recall")
     ap.add_argument("--device", default=None)
     ap.add_argument("--limit", type=int)
     ap.add_argument("--absent", action="store_true", help="treat every detection as a false positive")
