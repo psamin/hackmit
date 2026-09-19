@@ -1,0 +1,6 @@
+.venv/
+data/
+weights/
+runs/
+.env
+*.ts
