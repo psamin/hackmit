@@ -4,3 +4,4 @@ weights/
 runs/
 .env
 *.ts
+*.pt

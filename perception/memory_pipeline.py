@@ -42,6 +42,11 @@ BUFFER_S = 12.0
 ARM_EP_MIN_S = 1.0    # arm movement needed for an arm episode
 ARM_QUIET_S = 0.6     # no arm movement for this long ends the episode
 SNAPSHOT_EVERY_S = 1.0
+# A track this far past its last sighting can no longer affect anything: the longest
+# lookback in the loop is ACTIVE_WINDOW_S, and the two rules that reach into lost
+# tracks need them within 2.0s (ID-switch donor) and 0.5s (lost-then-placed).
+TRACK_TTL_S = ACTIVE_WINDOW_S + 2.0
+PRUNE_EVERY_S = 2.0   # how often to sweep dead tracks out of the table
 
 
 def ego_homography(prev_g, g, boxes):
@@ -58,6 +63,28 @@ def ego_homography(prev_g, g, boxes):
         return None
     H, _ = cv2.findHomography(p0[ok], p1[ok], cv2.RANSAC, 3.0)
     return H
+
+
+def pick_device(requested=None):
+    """Resolve --device, defaulting to the fastest backend this machine actually has.
+
+    The pipeline was written on Apple Silicon, where "mps" is right. On a
+    Windows or Linux box mps does not exist, and asking for it raises inside
+    ultralytics instead of falling back — so a teammate on another OS could not
+    run the pipeline at all without editing the source. Auto-detection keeps the
+    Mac behaviour identical and makes everyone else work.
+
+    An explicit --device is always honoured, including to force cpu when a GPU
+    backend is misbehaving.
+    """
+    if requested:
+        return requested
+    import torch
+    if torch.backends.mps.is_available():
+        return "mps"
+    if torch.cuda.is_available():
+        return "cuda"
+    return "cpu"
 
 
 def overlap(a, b):
@@ -94,18 +121,37 @@ def frame_at(buffer, t):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--source", required=True, help="video path or camera index")
-    ap.add_argument("--targets", default="bottle", help="comma-separated object prompts")
+    # Never put a generic prompt ("bottle") in here alongside a specific one
+    # ("pill bottle"). YOLOE labels each box with the single best-scoring prompt, so
+    # the generic one wins every time and the specific one never appears. Measured on
+    # a photo of real prescription bottles: with ["pill bottle","water bottle"] it
+    # returned pill bottle x7; adding "bottle" turned all 9 into "bottle".
+    ap.add_argument("--targets", default="pill bottle,water bottle,keys,phone,glasses",
+                    help="comma-separated object prompts; keep them mutually specific, no generic catch-alls")
     ap.add_argument("--weights", default="weights/yoloe-26s-seg.pt")
     ap.add_argument("--fps", type=float, default=10.0, help="processing rate")
     ap.add_argument("--start", type=float, default=0.0)
     ap.add_argument("--end", type=float, default=None)
-    ap.add_argument("--conf", type=float, default=0.10)
-    ap.add_argument("--device", default="mps")
+    # 0.10 sat inside the noise floor. Measured over 128 photos containing none of
+    # these objects, the worst false "pill bottle" scored 0.32, while real pill
+    # bottles reach 0.46 -- so 0.10 was admitting every false fire. 0.30 clears most
+    # of them; 0.35 cleared all in testing, at some cost to small/distant objects.
+    # The multi-frame gate (ACTIVE_MIN, REST_MIN) already discards one-frame flukes,
+    # so this does not have to be set as high as a single-frame classifier would need.
+    ap.add_argument("--conf", type=float, default=0.30,
+                    help="detection threshold; 0.35 removed all measured false positives, 0.10 is too low")
+    ap.add_argument("--device", default=None, help="mps/cuda/cpu; default: best available on this machine")
+    ap.add_argument("--cert", help="TLS certificate for a wss:// source (see phone/serve.py)")
+    ap.add_argument("--key", help="TLS private key for a wss:// source")
     ap.add_argument("--out", default="runs/latest")
     ap.add_argument("--no-vlm", action="store_true")
     ap.add_argument("--no-arm", action="store_true", help="ablation: trigger on motion only")
+    ap.add_argument("--static-camera", action="store_true",
+                    help="camera does not move (phone propped on a table/dock): skip ego-motion removal")
     args = ap.parse_args()
 
+    args.device = pick_device(args.device)
+    print(f"device: {args.device}", flush=True)
     targets = [t.strip() for t in args.targets.split(",")]
     out = Path(args.out); (out / "events").mkdir(parents=True, exist_ok=True); (out / "last_seen").mkdir(exist_ok=True)
     model = YOLOE(args.weights); model.set_classes(targets + [ARM])
@@ -113,7 +159,7 @@ def main():
     live = args.source.isdigit() or args.source.startswith("ws")
     if args.source.startswith("ws"):
         from glasses_rx import GlassesStream
-        cap = GlassesStream(args.source, args.fps)
+        cap = GlassesStream(args.source, args.fps, args.cert, args.key)
     else:
         cap = cv2.VideoCapture(int(args.source) if live else args.source)
     src_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
@@ -131,7 +177,7 @@ def main():
     prev_g, prev_boxes, prev_centres, prev_arm_c, arm_ep = None, [], {}, None, None
     events_f = open(out / "events.jsonl", "w")
     timing = collections.defaultdict(float)
-    n_frames, n_events, t_wall = 0, 0, time.perf_counter()
+    n_frames, n_events, t_wall, last_prune = 0, 0, time.perf_counter(), -1e18
     idx = int(args.start * src_fps) if not live else 0
 
     def emit(fire, n, i, tr, t, b, frame):
@@ -185,8 +231,12 @@ def main():
         ids = r.boxes.id.int().tolist() if r.boxes.id is not None else [-1] * len(names)
         arms = [] if args.no_arm else [b for b, n in zip(boxes, names) if n == ARM and b[3] >= 0.9 * frame.shape[0]]
 
+        # A propped phone has no camera motion to remove, so the homography is both
+        # wasted work (feature detection + optical flow + RANSAC on every frame) and a
+        # source of error: on a mostly-empty table there are few background features to
+        # fit, and a bad fit shows up as phantom object motion.
         t0 = time.perf_counter()
-        H = ego_homography(prev_g, g, prev_boxes) if prev_g is not None else None
+        H = None if args.static_camera else (ego_homography(prev_g, g, prev_boxes) if prev_g is not None else None)
         timing["ego_motion"] += time.perf_counter() - t0
 
         centres = {}
@@ -208,9 +258,17 @@ def main():
                     donor = max(lost, key=lambda o: o.active_end)
                     tr.armed, tr.active_start, tr.active_end, tr.active_frames, tr.disp = True, donor.active_start, donor.active_end, donor.active_frames, donor.disp
                     donor.armed = False
+            # How far the object moved since the last frame, with camera motion removed.
+            # Static camera: the raw centre delta already is that. Moving camera: warp the
+            # previous centre through the homography first. If the homography failed we
+            # leave this at zero, which reads as "not moving" — deliberately conservative,
+            # since a bad fit would otherwise fire put-downs at random.
             step_vec = np.zeros(2)
-            if H is not None and i in prev_centres:
-                step_vec = c - cv2.perspectiveTransform(prev_centres[i].reshape(1, 1, 2), H).ravel()
+            if i in prev_centres:
+                if args.static_camera:
+                    step_vec = c - prev_centres[i]
+                elif H is not None:
+                    step_vec = c - cv2.perspectiveTransform(prev_centres[i].reshape(1, 1, 2), H).ravel()
             moving = np.linalg.norm(step_vec) / diag > MOVE_THR
             covered = any(overlap(b, a) > CONTACT_THR for a in arms)
 
@@ -250,8 +308,9 @@ def main():
         if arms:
             a = max(arms, key=lambda a: (a[2] - a[0]) * (a[3] - a[1]))
             arm_c = np.array([(a[0] + a[2]) / 2, (a[1] + a[3]) / 2])
-        if arm_c is not None and prev_arm_c is not None and H is not None:
-            arm_step = arm_c - cv2.perspectiveTransform(prev_arm_c.reshape(1, 1, 2), H).ravel()
+        if arm_c is not None and prev_arm_c is not None and (H is not None or args.static_camera):
+            arm_step = (arm_c - prev_arm_c) if args.static_camera else \
+                       (arm_c - cv2.perspectiveTransform(prev_arm_c.reshape(1, 1, 2), H).ravel())
             if np.linalg.norm(arm_step) / diag > MOVE_THR:
                 arm_ep = arm_ep or {"start": t, "saw": False}
                 arm_ep["last_move"] = t
@@ -263,6 +322,16 @@ def main():
                 arm_ep = None
         for n in present:
             last_seen[n] = t
+
+        # Drop tracks that can no longer fire anything. Without this the table keeps
+        # every track ID the tracker ever issued: on a run of any length that is an
+        # unbounded dict, and the ID-switch donor lookup below rescans all of it every
+        # time a new track appears, so the cost grows with uptime. That is fine for a
+        # 60-second clip and not fine for a device meant to watch a room all day.
+        if t - last_prune >= PRUNE_EVERY_S:
+            last_prune = t
+            for j in [j for j, tr in tracks.items() if tr.last_t is not None and t - tr.last_t > TRACK_TTL_S]:
+                del tracks[j]
 
         prev_g, prev_boxes, prev_centres, prev_arm_c = g, list(boxes), centres, arm_c
         n_frames += 1
