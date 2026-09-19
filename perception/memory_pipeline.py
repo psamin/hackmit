@@ -60,6 +60,28 @@ def ego_homography(prev_g, g, boxes):
     return H
 
 
+def pick_device(requested=None):
+    """Resolve --device, defaulting to the fastest backend this machine actually has.
+
+    The pipeline was written on Apple Silicon, where "mps" is right. On a
+    Windows or Linux box mps does not exist, and asking for it raises inside
+    ultralytics instead of falling back — so a teammate on another OS could not
+    run the pipeline at all without editing the source. Auto-detection keeps the
+    Mac behaviour identical and makes everyone else work.
+
+    An explicit --device is always honoured, including to force cpu when a GPU
+    backend is misbehaving.
+    """
+    if requested:
+        return requested
+    import torch
+    if torch.backends.mps.is_available():
+        return "mps"
+    if torch.cuda.is_available():
+        return "cuda"
+    return "cpu"
+
+
 def overlap(a, b):
     ix = max(0, min(a[2], b[2]) - max(a[0], b[0]))
     iy = max(0, min(a[3], b[3]) - max(a[1], b[1]))
@@ -100,7 +122,7 @@ def main():
     ap.add_argument("--start", type=float, default=0.0)
     ap.add_argument("--end", type=float, default=None)
     ap.add_argument("--conf", type=float, default=0.10)
-    ap.add_argument("--device", default="mps")
+    ap.add_argument("--device", default=None, help="mps/cuda/cpu; default: best available on this machine")
     ap.add_argument("--cert", help="TLS certificate for a wss:// source (see phone/serve.py)")
     ap.add_argument("--key", help="TLS private key for a wss:// source")
     ap.add_argument("--out", default="runs/latest")
@@ -108,6 +130,8 @@ def main():
     ap.add_argument("--no-arm", action="store_true", help="ablation: trigger on motion only")
     args = ap.parse_args()
 
+    args.device = pick_device(args.device)
+    print(f"device: {args.device}", flush=True)
     targets = [t.strip() for t in args.targets.split(",")]
     out = Path(args.out); (out / "events").mkdir(parents=True, exist_ok=True); (out / "last_seen").mkdir(exist_ok=True)
     model = YOLOE(args.weights); model.set_classes(targets + [ARM])
