@@ -6,12 +6,12 @@
 
 Trigger, per tracked object:
   MOVING  = the object moves after head motion is removed
-  ARMED   = MOVING for >= ACTIVE_MIN frames AND net displacement >= ARM_DISP (jitter on a still object cancels out)
+  ARMED   = MOVING for >= ACTIVE_MIN_S AND net displacement >= ARM_DISP (jitter on a still object cancels out)
   AT REST = not MOVING and not covered by the wearer's arm
             (arm = a 'person' box touching the bottom edge; YOLOE's 'hand' prompt missed most held objects)
-  PLACED  = ARMED, then AT REST for >= REST_MIN frames
+  PLACED  = ARMED, then AT REST for >= REST_MIN_S
             (a track born right after a same-class ARMED track was lost inherits it: ID switch in hand)
-            or: ARMED, then AT REST for >= LOST_REST_MIN frames, then out of view (you look away after putting it down)
+            or: ARMED, then AT REST for >= LOST_REST_MIN_S, then out of view (you look away after putting it down)
   SIGHTED = a class seen at rest after being out of view >= UNSEEN_S (catches put-downs the camera missed),
             including the first time it is ever seen, which seeds the log with what is already on the table.
             Nothing was observed moving, so the event carries ONE frame, not before/during/after.
@@ -32,10 +32,17 @@ from ultralytics import YOLOE
 
 ARM = "person"
 PROC_W = 640          # frames are resized to this width before anything else
-ACTIVE_MIN = 3        # frames
-REST_MIN = 6          # frames of rest before a put-down fires
-LOST_REST_MIN = 2     # frames of rest before an object that then leaves the view counts as put down
-MOVE_THR = 0.015      # ego-compensated centre motion per frame, as a fraction of the frame diagonal
+# The gate is specified in SECONDS and converted to frames from --fps at startup.
+# It used to be written in frames, which meant --fps silently rescaled every timing in
+# it: at 10 fps "6 frames of rest" is 0.6 s, at 3 fps the same 6 frames would have been
+# 2 s, so an object had to sit still three times longer before a put-down fired. MOVE_THR
+# had the same problem in reverse -- it is a per-frame displacement standing in for a
+# speed, so at a third of the frame rate the same physical motion produces three times
+# the step and everything reads as moving. These values reproduce 10 fps exactly.
+ACTIVE_MIN_S = 0.3      # motion sustained this long can arm the trigger
+REST_MIN_S = 0.6        # stillness this long after an armed episode is a put-down
+LOST_REST_MIN_S = 0.2   # stillness this long, then out of view, also counts
+MOVE_THR_PER_S = 0.15   # ego-compensated centre speed, as a fraction of the diagonal per second
 ARM_DISP = 0.08       # net ego-compensated displacement over an episode, as a fraction of the diagonal
 CONTACT_THR = 0.5     # share of the object box covered by an arm box
 ACTIVE_WINDOW_S = 6.0 # an ACTIVE episode older than this no longer arms the trigger
@@ -139,7 +146,8 @@ def draw_overlay(frame, boxes, names, confs, ids, targets, hud, fps, subtitle):
         cv2.putText(f, label, (x1 + 3, max(10, y1 - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
 
     cv2.rectangle(f, (0, 0), (w, 22), (0, 0, 0), -1)
-    cv2.putText(f, f"{fps:4.1f} fps   {subtitle}   events {hud['events']}   q=quit",
+    cv2.putText(f, f"{fps:4.1f} fps   {subtitle}   events {hud['events']}   "
+                   f"vlm {hud['calls']} calls {hud['in_tok']}>{hud['out_tok']} tok   q=quit",
                 (6, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
 
     # VLM state: in flight, then the answer it came back with.
@@ -206,7 +214,15 @@ def main():
     args = ap.parse_args()
 
     args.device = pick_device(args.device)
-    print(f"device: {args.device}", flush=True)
+    # Seconds -> frames. The floor of 2 keeps the multi-frame filter meaningful at a low
+    # --fps: one frame is a fluke, two is a signal, and at 3 fps 0.3 s rounds to 1.
+    ACTIVE_MIN = max(2, round(ACTIVE_MIN_S * args.fps))
+    REST_MIN = max(2, round(REST_MIN_S * args.fps))
+    LOST_REST_MIN = max(1, round(LOST_REST_MIN_S * args.fps))
+    MOVE_THR = MOVE_THR_PER_S / args.fps
+    print(f"device: {args.device}  fps={args.fps} imgsz={args.imgsz} conf={args.conf}", flush=True)
+    print(f"gate: arm after {ACTIVE_MIN} frames of motion, fire after {REST_MIN} frames at rest "
+          f"({REST_MIN / args.fps:.1f}s), move threshold {MOVE_THR:.4f}/frame", flush=True)
     targets = [t.strip() for t in args.targets.split(",")]
     out = Path(args.out); (out / "events").mkdir(parents=True, exist_ok=True); (out / "last_seen").mkdir(exist_ok=True)
     model = YOLOE(args.weights); model.set_classes(targets + [ARM])
@@ -222,10 +238,11 @@ def main():
     if not live and args.start:
         cap.set(cv2.CAP_PROP_POS_MSEC, args.start * 1000)
 
-    vlm = None
+    vlm, vlm_cost = None, None
     if not args.no_vlm:
-        from vlm import describe_event
-        vlm = describe_event
+        from vlm import MODEL, cost_usd, describe_event
+        vlm, vlm_cost = describe_event, cost_usd
+        print(f"vlm: {MODEL}", flush=True)
 
     buffer = collections.deque(maxlen=int(BUFFER_S * args.fps))
     tracks, last_seen, reappeared, snap_t = {}, {}, {}, {}
@@ -234,7 +251,8 @@ def main():
     vlm_threads = []
     # What the --show window reports. Written from the VLM threads, read by the draw call,
     # so it is guarded: dict item assignment is atomic in CPython but a counter is not.
-    hud = {"events": 0, "pending": 0, "memory": None, "last_event": ""}
+    hud = {"events": 0, "pending": 0, "memory": None, "last_event": "",
+           "calls": 0, "in_tok": 0, "out_tok": 0}
     hud_lock = threading.Lock()
     timing = collections.defaultdict(float)
     n_frames, n_events, t_wall, last_prune = 0, 0, time.perf_counter(), -1e18
@@ -297,6 +315,9 @@ def main():
             hud["pending"] -= 1
             if mem:
                 hud["memory"] = mem
+                hud["calls"] += 1
+                hud["in_tok"] += mem.get("input_tokens", 0)
+                hud["out_tok"] += mem.get("output_tokens", 0)
 
     while True:
         try:
@@ -462,7 +483,10 @@ def main():
     wall = time.perf_counter() - t_wall
     stats = {"frames": n_frames, "events": n_events, "fps": args.fps, "imgsz": args.imgsz,
              "wall_s": round(wall, 1), "proc_fps": round(n_frames / wall, 1),
-             **{f"{k}_ms": round(1000 * v / max(n_frames, 1), 1) for k, v in timing.items()}}
+             **{f"{k}_ms": round(1000 * v / max(n_frames, 1), 1) for k, v in timing.items()},
+             "vlm_calls": hud["calls"], "vlm_input_tokens": hud["in_tok"], "vlm_output_tokens": hud["out_tok"]}
+    if vlm_cost:
+        stats["vlm_cost_usd"] = round(vlm_cost(hud["in_tok"], hud["out_tok"]), 4)
     print(json.dumps(stats))
     json.dump(stats, open(out / "stats.json", "w"))
 

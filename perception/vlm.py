@@ -18,8 +18,36 @@ if _env.exists():
         if k.strip() and not k.startswith("#"):
             os.environ.setdefault(k.strip(), v.strip())
 
-MODEL = "claude-opus-5"
-FALLBACK = {"extra_headers": {"anthropic-beta": "server-side-fallback-2026-07-01"}, "extra_body": {"fallbacks": "default"}}
+# Sonnet, deliberately. This is label-reading and scene description from a few small
+# stills, not reasoning, and it is 2.5x cheaper per token than Opus in and out.
+# Override without editing: COMPASS_VLM_MODEL=claude-opus-5 python memory_pipeline.py ...
+MODEL = os.environ.get("COMPASS_VLM_MODEL", "claude-sonnet-5")
+
+# Output ceilings. Worth being precise about what these do and do not protect against:
+# nothing here is an agent loop. Each event is exactly one request and one response, no
+# tools, no retries, no continuation -- so there is no runaway-loop failure mode to guard
+# against, and the only way to spend more than expected is a long single answer. These
+# cap that. A Memory is ~150 tokens of JSON and a spoken answer is one or two sentences;
+# the remaining headroom is for adaptive thinking, which counts against max_tokens.
+MAX_TOKENS_MEMORY = 2048
+MAX_TOKENS_ANSWER = 1024
+EFFORT = "low"  # both jobs are description, not reasoning; also bounds thinking tokens
+
+# Server-side refusal fallbacks exist because the Opus and Fable safety classifiers
+# sometimes decline benign requests. Sonnet does not carry them, and the beta is only
+# documented for those models, so only send it when we are actually on one.
+FALLBACK = ({"extra_headers": {"anthropic-beta": "server-side-fallback-2026-07-01"},
+             "extra_body": {"fallbacks": "default"}}
+            if MODEL.startswith(("claude-opus", "claude-fable")) else {})
+# USD per million tokens, for the end-of-run summary only. Keep in step with MODEL.
+PRICES = {"claude-sonnet-5": (2.0, 10.0), "claude-opus-5": (5.0, 25.0), "claude-haiku-4-5": (1.0, 5.0)}
+
+
+def cost_usd(input_tokens, output_tokens, model=MODEL):
+    per_in, per_out = PRICES.get(model, (0.0, 0.0))
+    return input_tokens / 1e6 * per_in + output_tokens / 1e6 * per_out
+
+
 _write_lock = threading.Lock()
 client = anthropic.Anthropic()
 
@@ -52,11 +80,17 @@ def describe_event(ev, memory_path):
         content += [{"type": "text", "text": label}, _image(path)]
     content.append({"type": "text", "text": f"Tracked object class: {ev['object']}. Trigger: {ev['type']}."})
     t0 = time.perf_counter()
-    resp = client.messages.parse(model=MODEL, max_tokens=16000, system=SYSTEM,
+    resp = client.messages.parse(model=MODEL, max_tokens=MAX_TOKENS_MEMORY, system=SYSTEM,
+                                 output_config={"effort": EFFORT},
                                  messages=[{"role": "user", "content": content}], output_format=Memory, **FALLBACK)
     latency = time.perf_counter() - t0
     if resp.stop_reason == "refusal":
         print(f"event {ev['id']}: refused", flush=True)
+        return None
+    if resp.stop_reason == "max_tokens":
+        # The schema is small, so this means thinking ate the budget. Raise
+        # MAX_TOKENS_MEMORY rather than lowering effort, which would cost accuracy.
+        print(f"event {ev['id']}: hit max_tokens ({MAX_TOKENS_MEMORY}); no memory written", flush=True)
         return None
     mem = {"logged_at": datetime.now().isoformat(timespec="seconds"), "video_t": ev["t"], "event_id": ev["id"],
            "trigger": ev["type"], **resp.parsed_output.model_dump(), "frames": ev["frames"],
@@ -84,7 +118,7 @@ def ask(question, memory_path):
              for m in memories]
     t0 = time.perf_counter()
     resp = client.messages.create(
-        model=MODEL, max_tokens=16000, output_config={"effort": "low"},
+        model=MODEL, max_tokens=MAX_TOKENS_ANSWER, output_config={"effort": EFFORT},
         system="You answer questions about where the user left things, from the memory log below. Answer in one or two "
                "short spoken sentences. Use the most recent 'placed' memory for the object. If the log doesn't say, say so.\n\n"
                "Memory log (oldest first):\n" + "\n".join(lines),
