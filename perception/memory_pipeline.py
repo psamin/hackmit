@@ -140,6 +140,11 @@ def main():
     # so this does not have to be set as high as a single-frame classifier would need.
     ap.add_argument("--conf", type=float, default=0.30,
                     help="detection threshold; 0.35 removed all measured false positives, 0.10 is too low")
+    # Inference resolution. Measured on CPU: 640 = 3.5fps, 480 = 5.6, 416 = 9.2, 320 = 14.2.
+    # 416 is the CPU sweet spot, but smaller hurts small objects -- keys first -- so the default
+    # stays at ultralytics' 640, which is what every run so far actually used. Drop to 416 on a
+    # CPU-only machine; on mps/cuda 640 is already fast enough.
+    ap.add_argument("--imgsz", type=int, default=640, help="inference size; 416 roughly triples CPU fps, at some cost to small objects")
     ap.add_argument("--device", default=None, help="mps/cuda/cpu; default: best available on this machine")
     ap.add_argument("--cert", help="TLS certificate for a wss:// source (see phone/serve.py)")
     ap.add_argument("--key", help="TLS private key for a wss:// source")
@@ -176,6 +181,7 @@ def main():
     tracks, last_seen, reappeared, snap_t = {}, {}, {}, {}
     prev_g, prev_boxes, prev_centres, prev_arm_c, arm_ep = None, [], {}, None, None
     events_f = open(out / "events.jsonl", "w")
+    vlm_threads = []
     timing = collections.defaultdict(float)
     n_frames, n_events, t_wall, last_prune = 0, 0, time.perf_counter(), -1e18
     idx = int(args.start * src_fps) if not live else 0
@@ -200,7 +206,13 @@ def main():
         events_f.write(json.dumps(ev) + "\n"); events_f.flush()
         print(f"[{t:7.1f}s] EVENT {fire} {n} #{i}", flush=True)
         if vlm:
-            threading.Thread(target=vlm, args=(ev, out / "memory.jsonl"), daemon=True).start()
+            # Daemon so Ctrl-C is never blocked by a hung request, but kept in a list and
+            # joined at the end: a VLM call takes seconds, events fire right up to the last
+            # frame, and without the join the interpreter exits first and those memories are
+            # silently lost -- exactly the ones a short demo clip produces.
+            th = threading.Thread(target=vlm, args=(ev, out / "memory.jsonl"), daemon=True)
+            th.start()
+            vlm_threads[:] = [x for x in vlm_threads if x.is_alive()] + [th]
 
     while True:
         try:
@@ -223,7 +235,8 @@ def main():
         diag = float(np.hypot(*g.shape))
 
         t0 = time.perf_counter()
-        r = model.track(frame, persist=True, tracker="botsort.yaml", conf=args.conf, device=args.device, verbose=False)[0]
+        r = model.track(frame, persist=True, tracker="botsort.yaml", conf=args.conf, imgsz=args.imgsz,
+                        device=args.device, verbose=False)[0]
         timing["detect_track"] += time.perf_counter() - t0
 
         boxes = r.boxes.xyxy.cpu().numpy() if len(r.boxes) else np.zeros((0, 4))
@@ -335,6 +348,18 @@ def main():
 
         prev_g, prev_boxes, prev_centres, prev_arm_c = g, list(boxes), centres, arm_c
         n_frames += 1
+
+    pending = [th for th in vlm_threads if th.is_alive()]
+    if pending:
+        print(f"waiting for {len(pending)} VLM call(s) to finish (Ctrl-C to abandon them)...", flush=True)
+        try:
+            for th in pending:
+                th.join()
+        except KeyboardInterrupt:
+            print("abandoned; those memories were not written", flush=True)
+    events_f.close()
+    if hasattr(cap, "release"):  # GlassesStream has no release(); cv2.VideoCapture does
+        cap.release()
 
     wall = time.perf_counter() - t_wall
     stats = {"frames": n_frames, "events": n_events, "wall_s": round(wall, 1), "proc_fps": round(n_frames / wall, 1),
