@@ -17,3 +17,23 @@ arm camera + joint state ─▶ RemotePolicyModule (laptop, dimOS) ──HTTP─
   trajectory on stop. Only the model call goes over the network.
 
 Observation and action names match `dimos dataprep` output: `observation.images.wrist`, `observation.state`, `action`.
+
+## Run on RunPod
+
+1. Start a GPU pod from a PyTorch template and expose HTTP port 8000.
+2. On the pod: `pip install lerobot==0.6.0 opencv-python-headless` (the version dimOS's runtime pins), copy
+   `vla/policy_server.py` and the checkpoint over, then `python policy_server.py --policy-path <checkpoint>`.
+3. The laptop reaches it through RunPod's HTTP proxy: `https://<pod-id>-8000.proxy.runpod.net/info`.
+
+Each chunk costs one round trip. With 10 steps per chunk at 30 fps, inference plus network must stay under
+~330 ms, or the arm pauses between chunks.
+
+## Test without the arm
+
+```bash
+python vla/policy_server.py --dummy --host 127.0.0.1 --port 8011 &
+PYTHONPATH=. python vla/sim_test.py --server http://127.0.0.1:8011    # dimOS's python, e.g. ../dimos/.venv/bin/python
+```
+
+`sim_test.py` forces dimOS's mock OpenYAM adapter and refuses to run if it would get the real one. Result on
+2026-09-19: preflight passed, 12 chunks accepted in 4 s, and stop cancelled cleanly.
