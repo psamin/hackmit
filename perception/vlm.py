@@ -3,7 +3,7 @@
     python vlm.py runs/p02/events/003_placed_0120.3      # describe one saved event
     python vlm.py --ask "where is the sauce bottle?" runs/p02/memory.jsonl
 """
-import base64, json, os, sys, threading, time
+import base64, codecs, json, os, sys, threading, time
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
@@ -11,13 +11,28 @@ from typing import Literal
 import anthropic
 from pydantic import BaseModel
 
+BOMS = ((codecs.BOM_UTF16_LE, "utf-16"), (codecs.BOM_UTF16_BE, "utf-16"), (codecs.BOM_UTF8, "utf-8-sig"))
+
+
+def _read_env(path):
+    """Decode .env whatever shell or editor wrote it.
+
+    Path.read_text() would use the cp1252 locale codec, and Windows shells do not write
+    cp1252: PowerShell 5.1's `>` and Out-File default to UTF-16 LE, newer PowerShell to
+    UTF-8 with a BOM. Either way the first key name arrives as mojibake, so
+    ANTHROPIC_API_KEY is never set and the only symptom is an auth failure on the first
+    event, with nothing pointing back at this file. Sniff the BOM instead of guessing.
+    """
+    raw = path.read_bytes()
+    for bom, enc in BOMS:
+        if raw.startswith(bom):
+            return raw.decode(enc)
+    return raw.decode("utf-8", errors="replace")
+
+
 _env = Path(__file__).with_name(".env")  # ANTHROPIC_API_KEY=... (gitignored)
 if _env.exists():
-    # utf-8-sig, not the default. On Windows `>` and Out-File write UTF-8 WITH a byte
-    # order mark, while read_text() decodes as cp1252 -- so the BOM arrives as "i>>?" glued
-    # to the first key, ANTHROPIC_API_KEY never gets set, and the only symptom is a 401 on
-    # the first event. utf-8-sig strips the BOM if present and is otherwise plain UTF-8.
-    for line in _env.read_text(encoding="utf-8-sig").splitlines():
+    for line in _read_env(_env).splitlines():
         k, _, v = line.partition("=")
         k = k.strip()
         if k and not k.startswith("#"):
