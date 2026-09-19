@@ -76,10 +76,10 @@ def main():
         live = [f"m{i}" for i in ids if answered(group[f"m{i}"])]
         rx = getattr(bus, "rx_received", "n/a")
         print(f"feedback ID = {name:12s}: {len(live)} motors answered {live} (frames received: {rx})")
-        if live and (best is None or len(live) > len(best[2])):
+        if live:  # keep this robot open (it holds the adapter exclusively) and stop scanning
             best = (name, robot, live)
-        else:
-            robot.__exit__(None, None, None)
+            break
+        robot.__exit__(None, None, None)
     if best is None:
         sys.exit("No motor answered. Check 24 V power (LED solid red) and the CAN wires in the XT30 cable.")
 
