@@ -164,6 +164,44 @@ one-time download of the text encoder. Warm: **7.0 s for 6 prompts, 1.5 s for 2*
 Budget that as startup cost, and do not add prompts you do not need. A full pipeline
 run on this laptop measured `detect_track_ms` of 72-82 ms at imgsz 416.
 
+### Frame rate is a detection-resolution trade, not a VLM cost
+
+The VLM never saw 10 fps. It gets 1 or 3 stills per *event*, so lowering `--fps`
+saves nothing on Claude -- it buys CPU, and CPU buys resolution:
+
+| --fps | budget/frame | imgsz that fits | measured |
+|---|---|---|---|
+| 3 | 333 ms | **640** | 319 ms — keeps up |
+| 4 | 250 ms | 640 | 267 ms — marginal |
+| 5 | 200 ms | 480 | 172 ms — keeps up |
+| 10 | 100 ms | 416 | 110 ms — and 416 is where keys start to vanish |
+
+**3 fps at 640 is the configuration to reach for when small objects matter.** What you
+give up is tracking robustness: BoT-SORT has to associate a hand-carried object across
+333 ms gaps, and the ID-switch donor rule is a mitigation, not a fix. If tracks start
+breaking mid-carry, go to 5 fps / 480 before giving up resolution.
+
+**The gate is specified in seconds, not frames.** It used to be frames, which meant
+`--fps` silently rescaled every threshold in it. Do not reintroduce a frame count:
+put the duration in `*_S` and let the startup conversion do the rest.
+
+### What a VLM call actually costs
+
+Frames are 640 px wide (`PROC_W`), so about 640x480 -> ~410 image tokens each
+(`w*h/750`). Per event, on Sonnet at $2/$10 per MTok:
+
+| event | images | input tok | output tok | cost |
+|---|---|---|---|---|
+| `placed` | 3 | ~1,450 | ~250 | ~$0.005 |
+| `sighted` | 1 | ~630 | ~250 | ~$0.004 |
+
+A ~30-event demo is well under a dollar. Do not guess at this: every call records
+`input_tokens` / `output_tokens` in `memory.jsonl`, and a run totals them into
+`stats.json` as `vlm_calls` / `vlm_input_tokens` / `vlm_output_tokens` /
+`vlm_cost_usd`. **There is no agent loop anywhere in this system** -- one event is one
+request and one response, no tools, no retries -- so `max_tokens` is bounding answer
+length, not runaway iteration.
+
 ### Other measurements
 
 - **Ego-motion homography**: 7.6 ms/frame, 0 with `--static-camera`. The real
