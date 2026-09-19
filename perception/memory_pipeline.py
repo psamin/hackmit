@@ -121,12 +121,25 @@ def frame_at(buffer, t):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--source", required=True, help="video path or camera index")
-    ap.add_argument("--targets", default="bottle", help="comma-separated object prompts")
+    # Never put a generic prompt ("bottle") in here alongside a specific one
+    # ("pill bottle"). YOLOE labels each box with the single best-scoring prompt, so
+    # the generic one wins every time and the specific one never appears. Measured on
+    # a photo of real prescription bottles: with ["pill bottle","water bottle"] it
+    # returned pill bottle x7; adding "bottle" turned all 9 into "bottle".
+    ap.add_argument("--targets", default="pill bottle,water bottle,keys,phone,glasses",
+                    help="comma-separated object prompts; keep them mutually specific, no generic catch-alls")
     ap.add_argument("--weights", default="weights/yoloe-26s-seg.pt")
     ap.add_argument("--fps", type=float, default=10.0, help="processing rate")
     ap.add_argument("--start", type=float, default=0.0)
     ap.add_argument("--end", type=float, default=None)
-    ap.add_argument("--conf", type=float, default=0.10)
+    # 0.10 sat inside the noise floor. Measured over 128 photos containing none of
+    # these objects, the worst false "pill bottle" scored 0.32, while real pill
+    # bottles reach 0.46 -- so 0.10 was admitting every false fire. 0.30 clears most
+    # of them; 0.35 cleared all in testing, at some cost to small/distant objects.
+    # The multi-frame gate (ACTIVE_MIN, REST_MIN) already discards one-frame flukes,
+    # so this does not have to be set as high as a single-frame classifier would need.
+    ap.add_argument("--conf", type=float, default=0.30,
+                    help="detection threshold; 0.35 removed all measured false positives, 0.10 is too low")
     ap.add_argument("--device", default=None, help="mps/cuda/cpu; default: best available on this machine")
     ap.add_argument("--cert", help="TLS certificate for a wss:// source (see phone/serve.py)")
     ap.add_argument("--key", help="TLS private key for a wss:// source")
