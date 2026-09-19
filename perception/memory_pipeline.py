@@ -12,7 +12,9 @@ Trigger, per tracked object:
   PLACED  = ARMED, then AT REST for >= REST_MIN frames
             (a track born right after a same-class ARMED track was lost inherits it: ID switch in hand)
             or: ARMED, then AT REST for >= LOST_REST_MIN frames, then out of view (you look away after putting it down)
-  SIGHTED = a class seen at rest after being out of view >= UNSEEN_S (catches put-downs the camera missed)
+  SIGHTED = a class seen at rest after being out of view >= UNSEEN_S (catches put-downs the camera missed),
+            including the first time it is ever seen, which seeds the log with what is already on the table.
+            Nothing was observed moving, so the event carries ONE frame, not before/during/after.
 
 Per wearer's arm (the VLM, not the tracker, decides which object moved):
   ARM_EPISODE = the arm moved (head motion removed) for >= ARM_EP_MIN_S, then went still or left view for
@@ -21,7 +23,7 @@ Per wearer's arm (the VLM, not the tracker, decides which object moved):
 LAST SEEN: the newest frame of each target class at rest goes to <out>/last_seen/<class>.jpg (at most once a second);
 vlm.ask() describes it when it is newer than the last memory.
 """
-import argparse, collections, json, threading, time
+import argparse, collections, json, textwrap, threading, time
 from pathlib import Path
 
 import cv2
@@ -118,6 +120,52 @@ def frame_at(buffer, t):
     return min(buffer, key=lambda item: abs(item[0] - t))
 
 
+def draw_overlay(frame, boxes, names, confs, ids, targets, hud, fps, subtitle):
+    """The --show window: what the detector sees on top, what the VLM said underneath.
+
+    Deliberately reads off the same `r.boxes` the trigger uses, so the window cannot
+    disagree with what the pipeline actually acted on.
+    """
+    f = frame.copy()
+    h, w = f.shape[:2]
+    for b, n, c, i in zip(boxes, names, confs, ids):
+        x1, y1, x2, y2 = (int(v) for v in b)
+        target = n in targets
+        colour = (0, 255, 255) if target else (200, 130, 0)   # targets yellow, the arm/person blue
+        cv2.rectangle(f, (x1, y1), (x2, y2), colour, 2 if target else 1)
+        label = f"{n} {c:.2f}" + (f" #{i}" if target and i >= 0 else "")
+        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+        cv2.rectangle(f, (x1, max(0, y1 - th - 6)), (x1 + tw + 6, y1), colour, -1)
+        cv2.putText(f, label, (x1 + 3, max(10, y1 - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+
+    cv2.rectangle(f, (0, 0), (w, 22), (0, 0, 0), -1)
+    cv2.putText(f, f"{fps:4.1f} fps   {subtitle}   events {hud['events']}   q=quit",
+                (6, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
+
+    # VLM state: in flight, then the answer it came back with.
+    lines, colour = [], (60, 200, 60)
+    if hud["pending"]:
+        lines, colour = [f"VLM THINKING... {hud['last_event']}"], (0, 165, 255)
+    elif hud["memory"]:
+        m = hud["memory"]
+        lines = wrap_lines(f"{m.get('event', '?')}  {m.get('object', '?')}  "
+                           f"(confidence {m.get('confidence', 0)})", w)
+        lines += wrap_lines(m.get("location_description", ""), w)
+        if m.get("event") == "error":
+            colour = (60, 60, 230)
+    if lines:
+        top = h - 20 * len(lines) - 10
+        cv2.rectangle(f, (0, top), (w, h), (0, 0, 0), -1)
+        cv2.rectangle(f, (0, top), (w, top + 3), colour, -1)
+        for k, line in enumerate(lines):
+            cv2.putText(f, line, (8, top + 24 + 20 * k), cv2.FONT_HERSHEY_SIMPLEX, 0.52, colour, 1)
+    return f
+
+
+def wrap_lines(text, width_px):
+    return textwrap.wrap(text, max(20, int(width_px / 9))) if text else []
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--source", required=True, help="video path or camera index")
@@ -151,6 +199,8 @@ def main():
     ap.add_argument("--out", default="runs/latest")
     ap.add_argument("--no-vlm", action="store_true")
     ap.add_argument("--no-arm", action="store_true", help="ablation: trigger on motion only")
+    ap.add_argument("--show", action="store_true",
+                    help="live demo window: detections, then the VLM's memory as it comes back")
     ap.add_argument("--static-camera", action="store_true",
                     help="camera does not move (phone propped on a table/dock): skip ego-motion removal")
     args = ap.parse_args()
@@ -182,37 +232,71 @@ def main():
     prev_g, prev_boxes, prev_centres, prev_arm_c, arm_ep = None, [], {}, None, None
     events_f = open(out / "events.jsonl", "w")
     vlm_threads = []
+    # What the --show window reports. Written from the VLM threads, read by the draw call,
+    # so it is guarded: dict item assignment is atomic in CPython but a counter is not.
+    hud = {"events": 0, "pending": 0, "memory": None, "last_event": ""}
+    hud_lock = threading.Lock()
     timing = collections.defaultdict(float)
     n_frames, n_events, t_wall, last_prune = 0, 0, time.perf_counter(), -1e18
     idx = int(args.start * src_fps) if not live else 0
 
     def emit(fire, n, i, tr, t, b, frame):
         tr.armed, tr.active_frames, reappeared[n] = False, 0, False
-        save_event(fire, n, i, t, (tr.active_start or t) - 1.0, tr.active_end or t, b, frame)
+        # A track that never had an ACTIVE episode -- a "sighted" object, at rest and never
+        # observed moving -- has no before or during to sample. Passing t_before=None marks
+        # it a snapshot: one frame. Sampling three anyway gave the VLM the same moment three
+        # times labelled BEFORE/DURING/AFTER, which reads as a placement it then described.
+        if tr.active_start is None:
+            save_event(fire, n, i, t, None, None, b, frame)
+        else:
+            save_event(fire, n, i, t, tr.active_start - 1.0, tr.active_end, b, frame)
 
     def save_event(fire, n, i, t, t_before, t_during, b, frame):
         nonlocal n_events
         n_events += 1
+        snapshot = t_before is None  # no observed motion: AFTER alone, see emit()
         ev = {"id": n_events, "type": fire, "object": n, "track": i, "t": round(t, 2),
-              "t_before": round(t_before, 2), "t_during": round(t_during, 2),
+              "t_before": None if snapshot else round(t_before, 2),
+              "t_during": None if snapshot else round(t_during, 2),
               "box": None if b is None else [round(float(v), 1) for v in b]}
         d = out / "events" / f"{n_events:03d}_{fire}_{t:07.1f}"
         d.mkdir(exist_ok=True)
         ev["frames"] = []
-        for name, (_, fr) in (("before", frame_at(buffer, t_before)), ("during", frame_at(buffer, t_during)), ("after", (t, frame))):
+        shots = [("after", (t, frame))] if snapshot else [
+            ("before", frame_at(buffer, t_before)), ("during", frame_at(buffer, t_during)), ("after", (t, frame))]
+        for name, (_, fr) in shots:
             path = d / f"{name}.jpg"
             cv2.imwrite(str(path), annotate(fr, b if name == "after" else None, n))
             ev["frames"].append(str(path))
         events_f.write(json.dumps(ev) + "\n"); events_f.flush()
         print(f"[{t:7.1f}s] EVENT {fire} {n} #{i}", flush=True)
+        with hud_lock:
+            hud["events"] = n_events
+            hud["last_event"] = f"{fire} {n}"
         if vlm:
+            with hud_lock:
+                hud["pending"] += 1
             # Daemon so Ctrl-C is never blocked by a hung request, but kept in a list and
             # joined at the end: a VLM call takes seconds, events fire right up to the last
             # frame, and without the join the interpreter exits first and those memories are
             # silently lost -- exactly the ones a short demo clip produces.
-            th = threading.Thread(target=vlm, args=(ev, out / "memory.jsonl"), daemon=True)
+            th = threading.Thread(target=run_vlm, args=(ev,), daemon=True)
             th.start()
             vlm_threads[:] = [x for x in vlm_threads if x.is_alive()] + [th]
+
+    def run_vlm(ev):
+        """Call the VLM and report the answer to the window. A failure here -- no API key,
+        no network, a refusal -- is shown rather than left as a thread traceback nobody reads."""
+        try:
+            mem = vlm(ev, out / "memory.jsonl")
+        except Exception as exc:
+            mem = {"event": "error", "object": ev["object"], "confidence": 0.0,
+                   "location_description": f"{type(exc).__name__}: {exc}"}
+            print(f"event {ev['id']}: VLM failed: {type(exc).__name__}: {exc}", flush=True)
+        with hud_lock:
+            hud["pending"] -= 1
+            if mem:
+                hud["memory"] = mem
 
     while True:
         try:
@@ -349,6 +433,18 @@ def main():
         prev_g, prev_boxes, prev_centres, prev_arm_c = g, list(boxes), centres, arm_c
         n_frames += 1
 
+        if args.show:
+            now = time.perf_counter()
+            shown_fps = n_frames / max(now - t_wall, 1e-6)
+            confs = r.boxes.conf.cpu().numpy() if len(r.boxes) else []
+            with hud_lock:
+                snapshot = dict(hud)
+            cv2.imshow("Compass - memory pipeline",
+                       draw_overlay(frame, boxes, names, confs, ids, targets, snapshot, shown_fps,
+                                    f"{args.device} imgsz={args.imgsz} conf={args.conf}"))
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                break
+
     pending = [th for th in vlm_threads if th.is_alive()]
     if pending:
         print(f"waiting for {len(pending)} VLM call(s) to finish (Ctrl-C to abandon them)...", flush=True)
@@ -360,9 +456,12 @@ def main():
     events_f.close()
     if hasattr(cap, "release"):  # GlassesStream has no release(); cv2.VideoCapture does
         cap.release()
+    if args.show:
+        cv2.destroyAllWindows()
 
     wall = time.perf_counter() - t_wall
-    stats = {"frames": n_frames, "events": n_events, "wall_s": round(wall, 1), "proc_fps": round(n_frames / wall, 1),
+    stats = {"frames": n_frames, "events": n_events, "fps": args.fps, "imgsz": args.imgsz,
+             "wall_s": round(wall, 1), "proc_fps": round(n_frames / wall, 1),
              **{f"{k}_ms": round(1000 * v / max(n_frames, 1), 1) for k, v in timing.items()}}
     print(json.dumps(stats))
     json.dump(stats, open(out / "stats.json", "w"))
