@@ -122,6 +122,27 @@ python test_prompts.py --weights yoloe-11s-seg.pt        --imgsz 640 --isolate
 python test_prompts.py --weights weights/yoloe-26s-seg.pt --imgsz 640 --isolate
 ```
 
+### `--no-arm` is required when the camera faces the user
+
+The arm rules assume a **head-worn** camera: a `person` box running off the bottom edge
+is read as the wearer's own arm reaching in, and an object it covers by more than
+`CONTACT_THR` is "held", so it is not at rest.
+
+On a webcam or a propped phone pointed **at** someone, that same test matches their whole
+seated body. Reproduced 2026-09-19 with a seated-person box (bottom edge at the frame
+bottom) and a bottle held in front of them: the person box qualifies as "the arm", covers
+**100%** of the bottle against a 0.5 threshold, so `covered` is true every frame, `tr.rest`
+is reset every frame, `REST_MIN` is never reached and **`placed` never fires at all**. The
+run looks alive - detections, tracks, fps - and silently produces nothing.
+
+So: head-worn or over-the-shoulder camera, keep the arm logic. Camera looking at a person,
+pass `--no-arm`. It is not an ablation in that setup, it is the correct mode.
+
+**Keep `person` in the prompt list either way.** It is a decoy, exactly like `water
+bottle`: it absorbs people so they do not get labelled as one of the real targets. With
+`--no-arm` it stops affecting the trigger and is no longer drawn in the `--show` window,
+but it must stay in the vocabulary.
+
 ### The trigger fires on EVERY detection, not just the "right" ones
 
 Worth being explicit, because the code reads as though it filters and it does not.

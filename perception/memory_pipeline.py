@@ -127,7 +127,7 @@ def frame_at(buffer, t):
     return min(buffer, key=lambda item: abs(item[0] - t))
 
 
-def draw_overlay(frame, boxes, names, confs, ids, targets, hud, fps, subtitle):
+def draw_overlay(frame, boxes, names, confs, ids, targets, hud, fps, subtitle, show_arm=True):
     """The --show window: what the detector sees on top, what the VLM said underneath.
 
     Deliberately reads off the same `r.boxes` the trigger uses, so the window cannot
@@ -136,8 +136,13 @@ def draw_overlay(frame, boxes, names, confs, ids, targets, hud, fps, subtitle):
     f = frame.copy()
     h, w = f.shape[:2]
     for b, n, c, i in zip(boxes, names, confs, ids):
-        x1, y1, x2, y2 = (int(v) for v in b)
         target = n in targets
+        # The person class earns its place in the vocabulary even when unused (it absorbs
+        # people, who would otherwise be labelled as one of the targets), but with the arm
+        # logic off it has no effect on anything and is pure clutter on screen.
+        if not target and not show_arm:
+            continue
+        x1, y1, x2, y2 = (int(v) for v in b)
         colour = (0, 255, 255) if target else (200, 130, 0)   # targets yellow, the arm/person blue
         cv2.rectangle(f, (x1, y1), (x2, y2), colour, 2 if target else 1)
         label = f"{n} {c:.2f}" + (f" #{i}" if target and i >= 0 else "")
@@ -206,7 +211,14 @@ def main():
     ap.add_argument("--key", help="TLS private key for a wss:// source")
     ap.add_argument("--out", default="runs/latest")
     ap.add_argument("--no-vlm", action="store_true")
-    ap.add_argument("--no-arm", action="store_true", help="ablation: trigger on motion only")
+    # Not merely an ablation. The arm rules assume a HEAD-WORN camera, where a person box
+    # running off the bottom edge is the wearer's own arm reaching in. On a webcam or a
+    # propped phone facing the user, that same test matches their whole seated body, so
+    # any object overlapping them counts as "held", never reaches rest, and never fires a
+    # put-down at all. Use --no-arm whenever the camera looks AT a person rather than out
+    # from one; it also drops the person boxes from the --show window.
+    ap.add_argument("--no-arm", action="store_true",
+                    help="camera faces the user (webcam/propped phone) or ablation: trigger on motion only")
     ap.add_argument("--show", action="store_true",
                     help="live demo window: detections, then the VLM's memory as it comes back")
     ap.add_argument("--static-camera", action="store_true",
@@ -466,7 +478,8 @@ def main():
                 snapshot = dict(hud)
             cv2.imshow("Compass - memory pipeline",
                        draw_overlay(frame, boxes, names, confs, ids, targets, snapshot, shown_fps,
-                                    f"{args.device} imgsz={args.imgsz} conf={args.conf}"))
+                                    f"{args.device} imgsz={args.imgsz} conf={args.conf}",
+                                    show_arm=not args.no_arm))
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
 
