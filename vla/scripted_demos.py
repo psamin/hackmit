@@ -26,8 +26,11 @@ import numpy as np
 ARM_IDS = (1, 2, 3, 4, 5, 6)  # OpenYAM joints 1-3 are DM4340, 4-6 DM4310; feedback on send ID + 0x10
 GRIPPER_S = 2.0        # the gripper closes in place over this long: the motor is slower than the arm
 GRIPPER_SETTLE_S = 0.5  # hold after it closes, before lifting
-# Joint limits (rad) from dimOS's yam.urdf; replay noise never pushes a target past them.
-LIMITS = np.array([(-2.618, 3.142), (0.0, 3.665), (0.0, 3.142), (-1.693, 1.571), (-1.571, 1.571), (-2.094, 2.094)])
+# Joint limits (rad), read off dimOS's yam_gripper_gravity.urdf, which is what the Damiao adapter clamps feedback
+# against. Replay noise never pushes a target past them. Teaching can: the motors are disabled, so the arm can be
+# pushed a little beyond a software limit by hand, and the adapter then clamps it back (a fault only past 0.05 rad).
+LIMITS = np.array([(-3.92699, 1.57080), (0.0, 3.66519), (0.0, 4.01426),
+                   (-1.65806, 1.65806), (-1.57080, 1.57080), (-2.35619, 1.83260)])
 
 
 def teach(path: str) -> None:
