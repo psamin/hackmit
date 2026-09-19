@@ -2,16 +2,20 @@
 variations while the camera and joint states are recorded.
 
     python vla/scripted_demos.py teach spots/left.json                                    # motors stay disabled
-    python vla/scripted_demos.py check spots/left.json                                    # gripper path, no hardware
-    PYTHONPATH=. python vla/scripted_demos.py record spots/*.json --real --camera-index 1 --reps 10
+    python vla/scripted_demos.py handover spots/left.json                                 # the preset, from the grasp
+    PYTHONPATH=. python vla/scripted_demos.py record spots/*.json --real --camera-index 1 --reps 10 \
+        --after spots/handover.json
     PYTHONPATH=. python vla/scripted_demos.py record spots/*.json --mock --auto-reset 0.5  # no hardware
 
-The first pose is home: the arm drives there before each episode starts, so every recording begins at the same pose and
-only the pick itself is recorded. Teach each spot's pick, e.g. `home o`, `above o`, `grasp c`, `lift c`, and one shared hand-over, e.g. `handover c`,
-`release o`, `home o`: the gripper opens or closes in place at the pose where its state changes. `record --after
-handover.json` plays the hand-over after each saved pick without recording it (before a hand-over is taught, `--release`
-opens the gripper in place and returns home instead), so ACT learns only the pick (table views)
-and run_policy.py --handover plays the same preset motion. Then `dimos dataprep build --source <session.db> --config
+A demo ends the moment the gripper closes on the bottle. Teach each spot as `home o`, `hover o`, `above o`, `grasp c`,
+then `q`: the gripper opens or closes in place at the pose where its state changes, and nothing follows the grasp. The
+first pose is home, which the arm drives to before each episode starts, so every recording begins at the same pose and
+only the pick itself is recorded.
+
+What happens after the grasp is hard-coded and never recorded, so the policy is trained on the pick alone: `handover`
+writes spots/handover.json (lift, swing round, open) from a taught grasp, `record --after spots/handover.json` plays it
+after each pick, and run_policy.py --handover plays the same preset. `--release` just opens in place and goes home,
+for testing before a hand-over exists. Then `dimos dataprep build --source <session.db> --config
 vla/openyam_dataprep.json` and `vla/runpod.sh train`.
 """
 import argparse, functools, json, time
@@ -39,7 +43,8 @@ def teach(path: str) -> None:
     robot.connect()
     poses = []
     print("Motors stay disabled. Pose the arm by hand, then type the pose name and o/c for the gripper "
-          "('above o', 'grasp c'). Empty line = refresh, q = save.")
+          "('above o', 'grasp c'). Empty line = refresh, q = save.\n"
+          "Stop at the grasp: the lift and hand-over come from `handover`, and must not be recorded.")
     try:
         while True:
             for _ in range(5):
@@ -59,45 +64,45 @@ def teach(path: str) -> None:
     warn_poses(path, poses)
 
 
-def warn_poses(path: str, poses: list) -> list:
-    """What would otherwise quietly ruin a recording: a pose past a joint limit, or a lift that is really a sag.
-
-    Joint 2 grows as the arm comes down - 1.03 hovering, 1.53 at the bottle, 2.36 collapsed at rest - so a pose after
-    the grasp whose joint 2 is no smaller than the grasp's does not rise.
-    """
+def warn_poses(path: str, poses: list, ends_at_grasp: bool = True) -> list:
+    """What would otherwise quietly ruin a recording: a pose past a joint limit, or anything after the grasp."""
     warnings, grasp = [], next((i for i, p in enumerate(poses) if not p["gripper"]), None)
-    for i, pose in enumerate(poses):
+    for pose in poses:
         q = np.asarray(pose["q"], float)
         past = [j + 1 for j in range(len(LIMITS)) if not LIMITS[j, 0] <= q[j] <= LIMITS[j, 1]]
         if past:
             warnings.append(f"{pose['name']}: joint {past} past the URDF limit")
-        if grasp is not None and i > grasp and q[1] >= poses[grasp]["q"][1]:
-            warnings.append(f"{pose['name']}: joint 2 is {q[1] - poses[grasp]['q'][1]:+.2f} rad against the grasp, so "
-                            f"it is no higher - the arm sagged while you let go to type. Fix it with: "
-                            f"python vla/scripted_demos.py lift {path}")
+    if ends_at_grasp and grasp is not None and grasp + 1 < len(poses):
+        after = ", ".join(p["name"] for p in poses[grasp + 1:])
+        warnings.append(f"{after} come after the grasp, and a demo has to end when the gripper closes. Move them "
+                        f"into the preset: python vla/scripted_demos.py handover {path}")
     for warning in warnings:
         print(f"  WARNING {path}: {warning}")
     return warnings
 
 
-def lift(path: str, rad: float) -> None:
-    """Replace the pose after the grasp with the grasp raised by `rad` on joint 2, the shoulder.
+def handover(path: str, out: str, rad: float, turn: float) -> None:
+    """Write the preset hand-over - lift, swing round, open - from the grasp taught in `path`.
 
-    A lift cannot be taught by hand: the motors are disabled while teaching, so the arm drops to rest the moment you
-    let go to type its name, and that sag is what gets saved. Smaller joint 2 is higher, and holding the wrist at its
-    grasp value keeps the bottle upright.
+    Hard-coded on purpose: the policy is trained on the pick alone, so none of this may appear in a recording. It is
+    also derived rather than taught, because the motors are disabled while teaching and the arm drops to rest the
+    moment you let go to type. Smaller joint 2 is higher on this arm (1.03 hovering, 1.53 at the bottle, 2.36
+    collapsed at rest); joint 1 is the base, and `turn` swings it round to whoever is taking the bottle.
     """
-    poses = json.load(open(path))["poses"]
-    grasp = next(i for i, p in enumerate(poses) if not p["gripper"])
-    q = list(poses[grasp]["q"])
-    q[1] = round(q[1] - rad, 4)
-    old = poses[grasp + 1]["q"] if grasp + 1 < len(poses) else None
-    poses[grasp + 1:grasp + 2] = [{"name": "lift", "q": q, "gripper": 0.0}]
-    json.dump({"poses": poses}, open(path, "w"), indent=1)
-    print(f"grasp {poses[grasp]['q']}\nlift  {q}  (joint 2 raised {rad:.2f} rad)")
-    if old:
-        print(f"was   {old}")
-    warn_poses(path, poses)
+    grasp = next(p for p in json.load(open(path))["poses"] if not p["gripper"])
+    up = list(grasp["q"])
+    up[1] = round(up[1] - rad, 4)
+    turned = list(up)
+    turned[0] = round(turned[0] + turn, 4)
+    poses = [{"name": "lift", "q": up, "gripper": 0.0},
+             {"name": "turn", "q": turned, "gripper": 0.0},
+             {"name": "release", "q": turned, "gripper": 1.0}]
+    json.dump({"poses": poses}, open(out, "w"), indent=1)
+    print(f"from grasp {grasp['q']}")
+    for pose in poses:
+        print(f"  {pose['name']:<8} {pose['q']}  gripper {'open' if pose['gripper'] else 'closed'}")
+    print(f"saved {out}; play it with: record ... --after {out}")
+    warn_poses(out, poses, ends_at_grasp=False)
 
 
 def check(path: str) -> None:
@@ -263,7 +268,7 @@ def record(args) -> None:
                 keys.press("enter")  # save
                 saved += 1
                 print(f"[{rep + 1}/{args.reps}] {path}: saved ({duration:.1f} s)", flush=True)
-                if args.hold:  # stay at the lift so the grasp is visible before anything releases
+                if args.hold:  # stay closed on the bottle so the grasp is visible before the preset runs
                     print(f"holding at the lift for {args.hold:.0f} s", flush=True)
                     time.sleep(args.hold)
                 if after:  # the preset hand-over: played, not recorded
@@ -285,9 +290,11 @@ def main() -> None:
     sub = ap.add_subparsers(dest="cmd", required=True)
     t = sub.add_parser("teach", help="pose the disabled arm by hand and save one spot's pick")
     t.add_argument("spot")
-    l = sub.add_parser("lift", help="derive the lift from the grasp, because a lift cannot be taught by hand")
-    l.add_argument("spot")
-    l.add_argument("--rad", type=float, default=0.35, help="radians to raise joint 2 above the grasp")
+    h = sub.add_parser("handover", help="write the preset played after each pick; it is never recorded")
+    h.add_argument("spot")
+    h.add_argument("--out", default="vla/spots/handover.json")
+    h.add_argument("--rad", type=float, default=0.35, help="radians to raise joint 2 above the grasp")
+    h.add_argument("--turn", type=float, default=1.2, help="radians to swing joint 1 round to the person")
     c = sub.add_parser("check", help="where the gripper tip goes for a taught file (arm model, no hardware)")
     c.add_argument("spot")
     r = sub.add_parser("record", help="replay taught picks with small variations and record demos")
@@ -303,12 +310,12 @@ def main() -> None:
     r.add_argument("--seed", type=int, default=0)
     r.add_argument("--auto-reset", type=float, default=None, help="seconds between reps instead of waiting for Enter")
     r.add_argument("--after", default=None, help="preset hand-over poses to play after each pick, not recorded")
-    r.add_argument("--hold", type=float, default=2.0, help="seconds to hold the bottle up at the lift before releasing")
+    r.add_argument("--hold", type=float, default=2.0, help="seconds to hold the closed grasp before the hand-over")
     r.add_argument("--release", action="store_true",
                    help="no hand-over yet: after each pick open the gripper in place, then go home (not recorded)")
     args = ap.parse_args()
-    {"teach": lambda: teach(args.spot), "lift": lambda: lift(args.spot, args.rad), "check": lambda: check(args.spot),
-     "record": lambda: record(args)}[args.cmd]()
+    {"teach": lambda: teach(args.spot), "check": lambda: check(args.spot), "record": lambda: record(args),
+     "handover": lambda: handover(args.spot, args.out, args.rad, args.turn)}[args.cmd]()
 
 
 if __name__ == "__main__":
