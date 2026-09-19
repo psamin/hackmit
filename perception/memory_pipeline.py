@@ -101,6 +101,8 @@ def main():
     ap.add_argument("--end", type=float, default=None)
     ap.add_argument("--conf", type=float, default=0.10)
     ap.add_argument("--device", default="mps")
+    ap.add_argument("--cert", help="TLS certificate for a wss:// source (see phone/serve.py)")
+    ap.add_argument("--key", help="TLS private key for a wss:// source")
     ap.add_argument("--out", default="runs/latest")
     ap.add_argument("--no-vlm", action="store_true")
     ap.add_argument("--no-arm", action="store_true", help="ablation: trigger on motion only")
@@ -113,7 +115,7 @@ def main():
     live = args.source.isdigit() or args.source.startswith("ws")
     if args.source.startswith("ws"):
         from glasses_rx import GlassesStream
-        cap = GlassesStream(args.source, args.fps)
+        cap = GlassesStream(args.source, args.fps, args.cert, args.key)
     else:
         cap = cv2.VideoCapture(int(args.source) if live else args.source)
     src_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
