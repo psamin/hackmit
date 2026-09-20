@@ -3,4 +3,8 @@ __pycache__/
 .DS_Store
 .env
 /weights/
+# Model weights are shared out of band, never committed: this one is 243 MB, well over
+# GitHub's 100 MB file limit, so a stray `git add .` would fail the push outright.
+/mobileclip2_*.ts
 server_log.txt
+pipeline_log.txt
