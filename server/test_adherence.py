@@ -312,6 +312,27 @@ class PublicView(unittest.TestCase):
         self.assertEqual(len(pub["days"]), 7)
         self.assertEqual(pub["streak"], 20)                                            # the streak still counts the whole history
 
+    def test_it_counts_how_the_answers_arrived(self):
+        doses = days_of("on_time", "on_time", "late", "none", "on_time")
+        doses[0].via, doses[1].via, doses[2].via = "voice", "tap", "voice"                # the last had no channel: a tap
+        pub = a.public(summary(doses, ts(4, 12)))
+        self.assertEqual(pub["answers_7d"], {"voice": 2, "tap": 2, "robot": 0})                          # the unanswered day is not counted
+
+    def test_only_the_last_seven_days_are_counted(self):
+        doses = days_of(*["on_time"] * 10)
+        for x in doses[:3]:
+            x.via = "voice"
+        self.assertEqual(a.answers_by(summary(doses, ts(9, 12))), {"voice": 0, "tap": 7, "robot": 0})
+        self.assertEqual(a.answers_by(summary(doses, ts(9, 12)), days=10), {"voice": 3, "tap": 7, "robot": 0})
+
+    def test_a_dose_still_waiting_is_not_an_answer(self):
+        self.assertEqual(a.answers_by(summary([dose(0, "none")], ts(0, 8, 30))), {"voice": 0, "tap": 0, "robot": 0})
+
+    def test_an_arm_handover_is_counted_on_its_own_not_as_a_tap(self):
+        doses = days_of("on_time", "on_time", "on_time")
+        doses[0].via, doses[1].via, doses[2].via = "robot", "voice", "tap"
+        self.assertEqual(a.answers_by(summary(doses, ts(2, 12))), {"voice": 1, "tap": 1, "robot": 1})
+
     def test_the_rate_is_rounded_and_absent_without_data(self):
         self.assertEqual(a.public(summary(days_of("on_time", "on_time", "none"), ts(3, 12)))["on_time_rate_7d"], 0.667)
         self.assertIsNone(a.public(summary([]))["on_time_rate_7d"])

@@ -160,4 +160,5 @@ async def status():
     return {"medication_check": doses.enabled(), "demo_timings": doses.demo_mode(),
             "schedule_reminders": doses.schedule_enabled(), "schedule": health["state"],
             "schedule_version": health["version"], "scheduler_running": health["running"],
-            "elasticsearch": bool(os.environ.get("ELASTICSEARCH_URL"))}
+            "elasticsearch": bool(os.environ.get("ELASTICSEARCH_URL")),
+            "voice_confirm": doses.voice_confirm_enabled(), "streak_shown": doses.streak_visible()}
