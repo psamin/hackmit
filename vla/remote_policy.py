@@ -176,7 +176,12 @@ class RemotePolicyModule(Module):
     def _request(self, method: str, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
         req = urllib.request.Request(self.config.server_url.rstrip("/") + path, method=method,
                                      data=None if body is None else json.dumps(body).encode(),
-                                     headers={"Content-Type": "application/json"})
+                                     headers={"Content-Type": "application/json",
+                                              # RunPod fronts the pod proxy with Cloudflare, which answers
+                                              # Python's default urllib agent with 403 error 1010.
+                                              "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                                                            "AppleWebKit/537.36 (KHTML, like Gecko) "
+                                                            "Chrome/126.0 Safari/537.36"})
         try:
             with urllib.request.urlopen(req, timeout=self.config.request_timeout_s) as resp:
                 return json.loads(resp.read())

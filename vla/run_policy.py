@@ -53,6 +53,8 @@ def main() -> None:
     ap.add_argument("--fps", type=float, default=30.0, help="the training dataset's rate")
     ap.add_argument("--camera-index", type=int, default=0, help="--real: OpenCV index of the arm camera")
     ap.add_argument("--control-port", type=int, default=8020, help="localhost control for arm_client.py; 0 = off")
+    ap.add_argument("--viz", action="store_true",
+                    help="add dimOS's Viser 3D view of the arm, served on http://127.0.0.1:8080")
     args = ap.parse_args()
 
     from dimos.core.global_config import global_config
@@ -88,7 +90,14 @@ def main() -> None:
         camera = CameraModule.blueprint(  # a factory: dimOS builds the webcam inside its worker process
             hardware=functools.partial(Webcam, camera_index=args.camera_index, width=640, height=480, fps=30.0))
 
+    viz = []
+    if args.viz:  # the same planner the openyam-planner-coordinator blueprint uses, purely to get its Viser view
+        from dimos.robot.manipulators.common.blueprints import planner
+        from dimos.robot.manipulators.openyam.config import make_openyam_model_config
+
+        viz = [planner(model=make_openyam_model_config(), visualization={"backend": "viser"})]
     blueprint = autoconnect(
+        *viz,
         ControlCoordinator.blueprint(hardware=[hardware], tasks=[
             joint_trajectory_task(OPENYAM_JOINTS),
             TaskConfig(name=f"{OPENYAM_HARDWARE_ID}_gripper", type="gripper", joint_names=[OPENYAM_GRIPPER_JOINT],

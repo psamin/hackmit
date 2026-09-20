@@ -36,6 +36,10 @@ def main() -> None:
     args = ap.parse_args()
     drop = {int(n) for n in args.drop.split(",") if n.strip()}
 
+    seeds = [p for p in args.sources if episodes(sqlite3.connect("file:" + p + "?mode=ro", uri=True))]
+    if not seeds:
+        sys.exit("none of those sessions hold a saved episode")
+    args.sources = seeds + [p for p in args.sources if p not in seeds]
     shutil.copyfile(args.sources[0], args.out)  # keeps the schema and the _streams config verbatim
     out = sqlite3.connect(args.out)
     for stream in STREAMS:
@@ -49,6 +53,10 @@ def main() -> None:
     for path in args.sources[1:]:
         src = sqlite3.connect(path)
         spans = episodes(src)
+        if not spans:  # an aborted run leaves frames but no saved episode; there is nothing to take from it
+            print(f"{path}: no episodes, skipped")
+            src.close()
+            continue
         base_ts = src.execute('select min(ts) from "coordinator_joint_state"').fetchone()[0]
         shift = end_ts + GAP_S - base_ts
         for stream in STREAMS:
