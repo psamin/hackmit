@@ -1187,6 +1187,21 @@ def ensure_cert():
 def main():
     import uvicorn
     ensure_cert()
+    # Windows: use the SELECTOR loop, not the default proactor one.
+    #
+    # A phone going out of wifi range mid-connection raises WinError 64 ("the specified
+    # network name is no longer available") inside the proactor accept loop, and
+    # CPython handles that by CLOSING the listening socket rather than re-arming it.
+    # Seen in practice: 8443 stopped accepting after a phone dropped while 8000 in the
+    # same process kept serving -- the server looked healthy from the laptop and the
+    # mobile app was simply gone until someone noticed.
+    #
+    # The selector loop does not have that failure mode. Its cost on Windows is no
+    # asyncio subprocess support and a ~512 socket ceiling; nothing here uses asyncio
+    # subprocesses (the openssl call is a synchronous subprocess.run) and the socket
+    # count is a handful, so neither applies.
+    if sys.platform == "win32" and hasattr(asyncio, "WindowsSelectorEventLoopPolicy"):
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     https = uvicorn.Server(uvicorn.Config(app, host="0.0.0.0", port=8443,
