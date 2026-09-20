@@ -85,6 +85,7 @@ AGENT_ROUTES = {
     "/api/photo-info": "show_photo", "/api/message": "send_message",
     "/api/call": "call_caregiver", "/api/ride": "request_ride",
     "/api/flights": "search_flights", "/api/fetch": "fetch_object",
+    "/api/arm-status": "get_arm_status",
     "/api/time-and-place": "get_time_and_place", "/api/pill-status": "check_pills_taken",
 }
 QUIET = {"/api/push", "/api/dg-token", "/api/agent-config", "/api/health"}
@@ -207,6 +208,8 @@ FUNCTIONS = [
     fn("call_caregiver", "Call the caregiver right away when the user needs help", defer=True),
     fn("request_ride", "Prepare a ride to a named place; a confirm button appears on screen",
        {"type": "object", "properties": {"destination": _str("place name, e.g. 'home', 'airport', 'doctor'")}, "required": ["destination"]}, defer=True),
+    fn("get_arm_status", "What the robot arm is doing right now. Use when they ask where it is, "
+                         "what is taking so long, or whether it has their item yet."),
     fn("fetch_object", "Send the robot arm to fetch an item it knows where to find",
        {"type": "object", "properties": {"item": _str("the item")}, "required": ["item"]}, defer=True),
 ]
@@ -303,10 +306,23 @@ async def push_stream(request: Request):
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+ARM_STAGE: dict = {"stage": "unknown", "detail": "", "at": 0.0}
+
+
+@app.get("/api/arm-status")
+async def arm_status():
+    """Where the arm is right now. run_policy.py posts every stage to /api/push as it happens."""
+    age = time.time() - ARM_STAGE["at"] if ARM_STAGE["at"] else None
+    return {"stage": ARM_STAGE["stage"], "detail": ARM_STAGE["detail"],
+            "seconds_ago": round(age, 1) if age is not None else None}
+
+
 @app.post("/api/push")
 async def push_send(body: dict):
     """Push an arbitrary event to every connected phone page. For testing and for
     the reminder scheduler. body = {"type": ..., "text": ...}"""
+    if body.get("type") == "arm_stage":  # remember it, so Pam can answer "what is the arm doing" later
+        ARM_STAGE.update(stage=body.get("stage", "unknown"), detail=body.get("detail", ""), at=time.time())
     for q in list(_subscribers):
         q.put_nowait(body)
     return {"delivered": len(_subscribers)}

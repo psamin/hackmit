@@ -76,6 +76,24 @@ def watch_for_grasp(control, policy, args):
             return True
         return False
 
+    def stage(name, detail=""):
+        """Tell the voice agent where the arm is, so it can answer "what is it doing" at any moment.
+
+        A separate event type from "speak": the agent should know the stage without saying it out loud.
+        """
+        print(f"[stage] {name} {detail}".rstrip(), flush=True)
+        if not args.voice_url:
+            return
+        import urllib.request
+        body = _json.dumps({"type": "arm_stage", "stage": name, "detail": detail}).encode()
+        req = urllib.request.Request(args.voice_url, data=body, method="POST",
+                                     headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=3) as r:
+                r.read()
+        except Exception:
+            pass  # the agent not listening must never hold up the arm
+
     def say(text_or_command):
         """Speak through the voice agent when --voice-url is set, otherwise run it as a shell command."""
         import subprocess
@@ -97,10 +115,12 @@ def watch_for_grasp(control, policy, args):
         """Lift and turn holding the bottle, present it, cue the person, wait for their hand, then open."""
 
         policy.stop_rollout()
+        stage("grasped", "holding the bottle")
         hold = [p for p in poses if not p["gripper"]]
         release = [p for p in poses if p["gripper"]]
         if hold:
             play(hold)
+        stage("presenting", "turned to the person, holding the bottle out")
         print(f"presenting the bottle for {args.present_s:.0f}s", flush=True)
         _time.sleep(args.present_s)
         if args.announce:  # the voice agent speaks while the arm holds still; the release waits for it to finish
@@ -116,17 +136,23 @@ def watch_for_grasp(control, policy, args):
             def nag(n):
                 say(prompts[n % len(prompts)])
 
-            wait_for_hand(camera_index=args.camera_index, timeout_s=args.catch_s, nag_s=args.nag_s, on_nag=nag)
+            stage("waiting_for_hand", "gripper still closed, watching for a hand")
+            saw = wait_for_hand(camera_index=args.camera_index, timeout_s=args.catch_s,
+                                nag_s=args.nag_s, on_nag=nag)
+            stage("hand_seen" if saw else "hand_timeout", "releasing")
         else:
             print(f"waiting {args.catch_s:.0f}s for a hand underneath", flush=True)
             _time.sleep(args.catch_s)
         if release:
             play(release)
+        stage("released", "the bottle is in their hand")
         print("handover done - bottle released", flush=True)
         if args.home:  # back to where the next rollout starts, gently, with the bottle already gone
             _time.sleep(args.return_after_s)
+            stage("returning", "going back to home")
             print(f"returning to home at {args.return_speed} rad/s", flush=True)
             play([_json.load(open(args.home))["poses"][0]], speed=args.return_speed)
+            stage("idle", "back at home, ready")
             print("home", flush=True)
 
     def watch():

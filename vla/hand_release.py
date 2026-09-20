@@ -20,8 +20,10 @@ import time
 from typing import Callable
 
 # A hand this much of the frame is close enough to be catching, rather than someone gesturing across the room.
-HAND_AREA_MIN = 0.045
-CONSECUTIVE = 3  # frames in a row, so one bad detection cannot open the gripper
+# The wrist camera looks outward at the hand-over pose, so a hand held out to catch is not large in frame - this
+# is deliberately low. Run vla/hand_probe.py to see what your setup actually reads and set it from that.
+HAND_AREA_MIN = 0.012
+CONSECUTIVE = 2  # frames in a row, so one bad detection cannot open the gripper
 
 
 def hand_area(landmarks) -> float:
@@ -47,8 +49,10 @@ def wait_for_hand(camera_index: int = 0, timeout_s: float = 30.0, nag_s: float =
         time.sleep(timeout_s)
         return False
 
-    detector = mp_hands.Hands(static_image_mode=False, max_num_hands=1,
-                              min_detection_confidence=0.5, min_tracking_confidence=0.5)
+    # Two hands and a lower confidence: someone reaching in from the side is a partial, low-confidence hand,
+    # and missing it leaves the arm gripping while the person waits with their palm out.
+    detector = mp_hands.Hands(static_image_mode=False, max_num_hands=2,
+                              min_detection_confidence=0.4, min_tracking_confidence=0.4)
     deadline, next_nag, nagged, streak, frames = time.time() + timeout_s, time.time(), 0, 0, 0
     try:
         while time.time() < deadline:
