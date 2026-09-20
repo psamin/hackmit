@@ -6,7 +6,7 @@
 Terminal controls: p = preflight (moves nothing), s = start, x = stop, q = quit. Quitting disables the motors and the
 arm has no brakes: support it first. Other processes (the voice loop) use vla/arm_client.py, served on 127.0.0.1:8020.
 """
-import argparse, json, socketserver, sys, threading
+import argparse, functools, json, socketserver, sys, threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
@@ -85,7 +85,8 @@ def main() -> None:
         from dimos.hardware.sensors.camera.module import CameraModule
         from dimos.hardware.sensors.camera.webcam import Webcam
 
-        camera = CameraModule.blueprint(hardware=Webcam(camera_index=args.camera_index, width=640, height=480, fps=30.0))
+        camera = CameraModule.blueprint(  # a factory: dimOS builds the webcam inside its worker process
+            hardware=functools.partial(Webcam, camera_index=args.camera_index, width=640, height=480, fps=30.0))
 
     blueprint = autoconnect(
         ControlCoordinator.blueprint(hardware=[hardware], tasks=[
