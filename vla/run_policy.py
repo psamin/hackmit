@@ -6,7 +6,7 @@
 Terminal controls: p = preflight (moves nothing), s = start, x = stop, q = quit. Quitting disables the motors and the
 arm has no brakes: support it first. Other processes (the voice loop) use vla/arm_client.py, served on 127.0.0.1:8020.
 """
-import argparse, functools, json, socketserver, sys, threading
+import argparse, functools, json, socketserver, sys, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
@@ -62,7 +62,9 @@ def watch_for_grasp(control, policy, args):
 
     poses = _json.load(open(args.handover))["poses"]
     gripper_joint = OPENYAM_JOINTS[-1]
-    GRASP_SETTLE_S = 0.6
+    GRASP_SETTLE_S = 0.8      # the jaws must be this long without moving before the lift starts
+    GRIPPER_STILL = 0.02      # rad of travel over that window that still counts as "stopped"
+    SHUT_ON_AIR = 0.05        # fully shut means it missed the bottle; lifting nothing is worse than not lifting
     done = threading.Event()
 
     def play(motion):
@@ -75,7 +77,9 @@ def watch_for_grasp(control, policy, args):
         return False
 
     def run():
-        """Lift and turn holding the bottle, present it, then open."""
+        """Lift and turn holding the bottle, present it, cue the person, wait for their hand, then open."""
+        import subprocess
+
         policy.stop_rollout()
         hold = [p for p in poses if not p["gripper"]]
         release = [p for p in poses if p["gripper"]]
@@ -83,26 +87,48 @@ def watch_for_grasp(control, policy, args):
             play(hold)
         print(f"presenting the bottle for {args.present_s:.0f}s", flush=True)
         _time.sleep(args.present_s)
+        if args.announce:  # the voice agent speaks while the arm holds still; the release waits for it to finish
+            print(f"announcing: {args.announce}", flush=True)
+            try:
+                subprocess.run(args.announce, shell=True, timeout=20, check=False)
+            except subprocess.TimeoutExpired:
+                print("announcement timed out, carrying on", flush=True)
+        print(f"waiting {args.catch_s:.0f}s for a hand underneath", flush=True)
+        _time.sleep(args.catch_s)
         if release:
             play(release)
-        print("handover done", flush=True)
+        print("handover done - bottle released", flush=True)
 
     def watch():
-        closed_since = None
+        """Fire only once the jaws have stopped moving, not the moment they pass the threshold.
+
+        The gripper sweeps through every value on its way shut, so a plain threshold triggers mid-close and the arm
+        lifts before it has the bottle. Wait until it is both below the threshold and no longer changing: that means
+        it has finished travelling, either stalled on the bottle or shut on air.
+        """
+        history = []
         while not done.is_set():
             _time.sleep(0.1)
             if not policy.rollout_status().get("active"):
-                closed_since = None
+                history.clear()
                 continue
             value = control.get_joint_positions().get(gripper_joint)
             if value is None or value > args.grip_closed:
-                closed_since = None
+                history.clear()
                 continue
-            closed_since = closed_since or _time.time()
-            if _time.time() - closed_since >= GRASP_SETTLE_S:
-                print(f"gripper closed at {value:.2f} - handing over", flush=True)
-                closed_since = None
-                run()
+            history.append(value)
+            if len(history) < int(GRASP_SETTLE_S / 0.1):
+                continue
+            recent = history[-int(GRASP_SETTLE_S / 0.1):]
+            if max(recent) - min(recent) > GRIPPER_STILL:  # still travelling
+                continue
+            if value < SHUT_ON_AIR:
+                print(f"gripper shut to {value:.2f} - nothing in the jaws, not handing over", flush=True)
+                history.clear()
+                continue
+            print(f"gripper settled at {value:.2f} holding the bottle - handing over", flush=True)
+            history.clear()
+            run()
 
     threading.Thread(target=watch, daemon=True).start()
     return run
@@ -118,11 +144,18 @@ def main() -> None:
     ap.add_argument("--fps", type=float, default=30.0, help="the training dataset's rate")
     ap.add_argument("--camera-index", type=int, default=0, help="--real: OpenCV index of the arm camera")
     ap.add_argument("--control-port", type=int, default=8020, help="localhost control for arm_client.py; 0 = off")
-    ap.add_argument("--speed", type=float, default=0.3, help="--handover: rad/s cap for the preset motion")
+    ap.add_argument("--home", default=None,
+                    help="spot file whose first pose the arm drives to before each rollout, e.g. vla/spots/left_01.json")
+    ap.add_argument("--speed", type=float, default=0.3, help="--handover and --home: rad/s cap for the preset motion")
     ap.add_argument("--handover", default=None,
                     help="preset poses to play the moment the policy closes the gripper, e.g. vla/spots/handover.json")
     ap.add_argument("--present-s", type=float, default=2.0,
-                    help="--handover: seconds to hold the bottle out to the person before opening the gripper")
+                    help="--handover: seconds to hold the bottle out before the announcement")
+    ap.add_argument("--announce", default=None,
+                    help="--handover: shell command run once the bottle is presented, e.g. a voice agent saying "
+                         "'catch, grab the bottle'. The release waits for it to finish, then --catch-s longer.")
+    ap.add_argument("--catch-s", type=float, default=2.0,
+                    help="--handover: seconds after the announcement before the gripper opens, to get a hand under it")
     ap.add_argument("--grip-closed", type=float, default=0.85,
                     help="--handover: gripper below this counts as closed on the bottle")
     ap.add_argument("--replay-episode", type=int, default=None,
@@ -133,6 +166,17 @@ def main() -> None:
     args = ap.parse_args()
 
     from dimos.core.global_config import global_config
+
+    # dimOS starts its workers with multiprocessing's forkserver. On macOS that child cannot initialise Metal, and
+    # dimos/models/base.py calls torch.backends.mps.is_available() during import, so the worker dies in
+    # MPSLibrary::MPSKey_Compile with SIGSEGV and the coordinator only sees a broken pipe. A spawned child starts
+    # clean, so Metal initialises normally there.
+    if sys.platform == "darwin":
+        import multiprocessing
+
+        from dimos.core.coordination import python_worker
+
+        python_worker.get_forkserver_context = lambda: multiprocessing.get_context("spawn")
 
     if args.mock:
         global_config.simulation = "mock"  # before building OpenYAM hardware: selects the in-memory adapter
@@ -190,10 +234,30 @@ def main() -> None:
     policy = coordinator.get_instance(RemotePolicyModule)
     control = coordinator.get_instance(ControlCoordinator)
     handover = watch_for_grasp(control, policy, args) if args.handover else (lambda: None)
-    actions = {"p": policy.preflight_rollout, "s": policy.start_rollout,
+
+    def start():
+        """Drive to the taught home first: every training episode began there, so the policy expects it."""
+        if args.home:
+            import json as _json
+
+            import numpy as _np
+
+            from dimos.control.tasks.trajectory_task.trajectory_task import TrajectoryExecutionStatus
+
+            from vla.scripted_demos import build_trajectory
+            home = _json.load(open(args.home))["poses"][0]
+            print(f"driving to home from {args.home} before the rollout", flush=True)
+            begin = [control.get_joint_positions()[n] for n in OPENYAM_JOINTS]
+            trajectory, duration = build_trajectory(OPENYAM_JOINTS, begin, [home], args.speed, 0.0,
+                                                    _np.random.default_rng(0))
+            if control.execute_trajectory(trajectory).status is TrajectoryExecutionStatus.ACCEPTED:
+                time.sleep(duration + 0.5)
+        return policy.start_rollout()
+
+    actions = {"p": policy.preflight_rollout, "s": start,
                "x": policy.stop_rollout, "h": lambda: (handover(), policy.rollout_status())[1]}
     if args.control_port:
-        serve_control({"preflight": policy.preflight_rollout, "start": policy.start_rollout,
+        serve_control({"preflight": policy.preflight_rollout, "start": start,
                        "stop": policy.stop_rollout,
                        "handover": lambda: (handover(), policy.rollout_status())[1]},
                       policy.rollout_status, args.control_port)

@@ -3,3 +3,9 @@ __pycache__/
 .DS_Store
 .env
 /weights/
+
+# Trained checkpoints and datasets: large binaries, rebuildable from the recordings
+act_ckpt/
+act_final/
+openyam_dataset/
+openyam_all.db
