@@ -67,9 +67,9 @@ def watch_for_grasp(control, policy, args):
     SHUT_ON_AIR = 0.05        # fully shut means it missed the bottle; lifting nothing is worse than not lifting
     done = threading.Event()
 
-    def play(motion):
+    def play(motion, speed=None):
         start = [control.get_joint_positions()[n] for n in OPENYAM_JOINTS]
-        trajectory, duration = build_trajectory(OPENYAM_JOINTS, start, motion, args.speed, 0.0,
+        trajectory, duration = build_trajectory(OPENYAM_JOINTS, start, motion, speed or args.speed, 0.0,
                                                 __import__("numpy").random.default_rng(0))
         if control.execute_trajectory(trajectory).status is TrajectoryExecutionStatus.ACCEPTED:
             _time.sleep(duration + 0.5)
@@ -108,6 +108,11 @@ def watch_for_grasp(control, policy, args):
         if release:
             play(release)
         print("handover done - bottle released", flush=True)
+        if args.home:  # back to where the next rollout starts, gently, with the bottle already gone
+            _time.sleep(args.return_after_s)
+            print(f"returning to home at {args.return_speed} rad/s", flush=True)
+            play([_json.load(open(args.home))["poses"][0]], speed=args.return_speed)
+            print("home", flush=True)
 
     def watch():
         """Fire only once the jaws have stopped moving, not the moment they pass the threshold.
@@ -171,6 +176,10 @@ def main() -> None:
                          "--catch-s becomes the timeout it releases on anyway.")
     ap.add_argument("--nag-s", type=float, default=3.0,
                     help="--wait-for-hand: seconds between spoken prompts while waiting for a hand")
+    ap.add_argument("--return-after-s", type=float, default=3.0,
+                    help="--handover: seconds to wait after releasing before the arm goes back to home")
+    ap.add_argument("--return-speed", type=float, default=0.15,
+                    help="--handover: rad/s for the trip back to home; slower than --speed, nothing is being carried")
     ap.add_argument("--nag", action="append", default=None,
                     help="--wait-for-hand: a command to run for each prompt, repeatable; cycles through them")
     ap.add_argument("--grip-closed", type=float, default=0.85,
