@@ -16,8 +16,12 @@ Env (read from server/.env then perception/.env):
     AMADEUS_KEY/SECRET   flight search; falls back to a Google Flights link
     HOME_LAT/HOME_LON    weather + ride pickup (default: MIT campus)
 """
-import asyncio, json, os, subprocess, sys, time
+import asyncio, hashlib, json, os, ssl, subprocess, sys, time
+from collections import deque
+from contextlib import suppress
+from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
 from fastapi import FastAPI, Request
@@ -102,6 +106,10 @@ Actions:
 - If they sound confused, scared, or ask for help, offer to call their caregiver
   with call_caregiver.
 - If find_object finds nothing, say honestly that you didn't see it — never invent a place.
+- find_object may come back with SEVERAL places. Read out every one, newest first, with
+  when you saw it. Never mention only the most recent: the medication they want may be
+  the one in the other room. You cannot tell whether that means two bottles or one that
+  was moved, so say where you have seen it, not how many there are.
 """
 
 
@@ -155,6 +163,58 @@ async def get_agent_config():
 _subscribers: set[asyncio.Queue] = set()
 
 
+def memory_notice(mem):
+    identity = {k: mem.get(k) for k in ("event_id", "logged_at", "object", "event", "location_description", "frames")}
+    key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:24]
+    obj = str(mem.get("object") or "an object")
+    certain = mem.get("event") == "placed" and obj != "other" and float(mem.get("confidence") or 0) >= .4
+    return {"id": key, "object": obj, "logged_at": mem.get("logged_at"),
+            "title": "Memory saved" if certain else "Observation saved",
+            "detail": f"{obj.capitalize()}: {mem.get('location_description') or 'location recorded'}" if certain
+                      else f"A new observation of {obj}. Its resting place is not confirmed."}
+
+
+class MemoryTail:
+    def __init__(self, path):
+        self.path, self.offset, self.pending = path, 0, b""
+        self.identity = None
+        self.recent = deque(maxlen=5)
+        self.seen = deque(maxlen=256)
+        while True:
+            previous = self.offset
+            self.poll()
+            if self.offset == previous:
+                break
+
+    def poll(self):
+        notices = []
+        try:
+            with self.path.open("rb") as f:
+                stat = os.fstat(f.fileno())
+                identity = (stat.st_dev, stat.st_ino)
+                if identity != self.identity or stat.st_size < self.offset:
+                    self.offset, self.pending, self.identity = 0, b"", identity
+                f.seek(self.offset)
+                data = f.read(262144)
+                self.offset = f.tell()
+        except OSError:
+            return notices
+        lines = (self.pending + data).split(b"\n")
+        self.pending = lines.pop()
+        if len(self.pending) > 1048576:
+            self.pending = b""
+        for line in lines:
+            try:
+                notice = memory_notice(json.loads(line))
+            except (ValueError, TypeError, AttributeError):
+                continue
+            if notice["id"] not in self.seen:
+                self.seen.append(notice["id"])
+                self.recent.append(notice)
+                notices.append(notice)
+        return notices
+
+
 @app.get("/api/push")
 async def push_stream(request: Request):
     q: asyncio.Queue = asyncio.Queue()
@@ -162,12 +222,15 @@ async def push_stream(request: Request):
 
     async def stream():
         try:
-            yield 'data: {"type":"hello"}\n\n'
+            memories = await asyncio.to_thread(MemoryTail, MEMORY_JSONL)
+            yield f"data: {json.dumps({'type': 'hello', 'memories': list(memories.recent)})}\n\n"
             while not await request.is_disconnected():
                 try:
-                    yield f"data: {json.dumps(await asyncio.wait_for(q.get(), 15))}\n\n"
+                    yield f"data: {json.dumps(await asyncio.wait_for(q.get(), 1))}\n\n"
                 except asyncio.TimeoutError:
                     yield ": keepalive\n\n"
+                for notice in await asyncio.to_thread(memories.poll):
+                    yield f"data: {json.dumps({'type': 'memory_saved', **notice})}\n\n"
         finally:
             _subscribers.discard(q)
 
@@ -222,19 +285,63 @@ async def frame(path: str):
 # find_object: the core feature. Newest 'placed' memory wins; the AFTER frame is
 # returned so the page can show a photo of where the thing actually is.
 # --------------------------------------------------------------------------
+def _ago(logged_at: str) -> str:
+    """'20 minutes ago' - how a person refers to a time, not an ISO stamp."""
+    try:
+        delta = datetime.now() - datetime.fromisoformat(logged_at)
+    except (TypeError, ValueError):
+        return ""
+    mins = int(delta.total_seconds() // 60)
+    if mins < 1:
+        return "just now"
+    if mins < 60:
+        return f"{mins} minute{'s' if mins != 1 else ''} ago"
+    hours = mins // 60
+    if hours < 24:
+        return f"{hours} hour{'s' if hours != 1 else ''} ago"
+    days = hours // 24
+    return f"{days} day{'s' if days != 1 else ''} ago"
+
+
 @app.get("/api/find")
 async def find(q: str):
-    from es import search
-    mem, source = search(q, MEMORY_JSONL)
-    if not mem:
+    """Every distinct place the item has been seen, newest first.
+
+    There can genuinely be several - a household with medication in the kitchen and by
+    the bed - and reporting only the newest would send someone to the wrong room. What
+    we cannot tell them is whether that means two bottles or one that moved: there is no
+    instance identity behind these memories. So the wording is "I've seen it in N
+    places", with a time against each, and the person decides.
+    """
+    from es import search_all
+    mems, source = search_all(q, MEMORY_JSONL, limit=3)
+    if not mems:
         return {"say": f"I'm sorry, I didn't see where your {q} went."}
-    where = mem.get("location_description") or "somewhere nearby"
-    out = {"say": f"Your {mem.get('object', q)} is {where}.",
-           "card": {"title": mem.get("object", q), "body": where}}
-    frame = mem.get("after_frame") or (mem.get("frames") or [None])[-1]
+
+    name = mems[0].get("object", q)
+    # The VLM capitalises its descriptions; these get spoken mid-sentence, where
+    # "Also On the seat..." sounds wrong. Leave acronyms (FRAGMENT) alone.
+    def lower_first(t):
+        return t[0].lower() + t[1:] if len(t) > 1 and t[1].islower() else t
+    places = [(lower_first(m.get("location_description") or "somewhere nearby"),
+               _ago(m.get("logged_at", ""))) for m in mems]
+    if len(places) == 1:
+        where, when = places[0]
+        say = f"Your {name} is {where}." + (f" I saw it {when}." if when else "")
+    else:
+        first, rest = places[0], places[1:]
+        say = (f"I've seen your {name} in {len(places)} places. "
+               f"Most recently {first[0]}" + (f", {first[1]}" if first[1] else "") + ". "
+               + " ".join(f"Also {w}" + (f", {t}" if t else "") + "." for w, t in rest))
+
+    out = {"say": say,
+           "card": {"title": name,
+                    "body": "\n".join(f"{w}" + (f"  ({t})" if t else "") for w, t in places)},
+           "places": [{"where": w, "when": t} for w, t in places],
+           "source": source}
+    frame = mems[0].get("after_frame") or (mems[0].get("frames") or [None])[-1]
     if frame:
         out["card"]["image"] = "/frames/" + str(frame).replace("\\", "/")
-    out["source"] = source
     return out
 
 
@@ -409,9 +516,17 @@ async def message(body: dict):
         except Exception as e:
             return {"say": f"The text didn't go through: {e}"}
     from urllib.parse import quote
-    return {"say": f"Tap the green button to send that to {c['name']}.",
+    return {"say": f"Tap the button to send that to {c['name']}.",
             "card": {"title": f"Text {c['name']}", "body": f"\"{msg}\"",
                      "action": {"label": f"Send to {c['name']}", "href": f"sms:{c['phone']}&body={quote(msg)}"}}}
+
+
+@app.get("/api/caregiver-card")
+async def caregiver_card():
+    c = CONTACTS["caregiver"]
+    return {"say": f"Tap Call {c['name']} to open your phone's dialer.",
+            "card": {"title": f"Contact {c['name']}", "body": "Your caregiver. The call starts only after you confirm on your phone.",
+                     "action": {"label": f"Call {c['name']}", "href": f"tel:{c['phone']}"}}}
 
 
 @app.post("/api/call")
@@ -429,7 +544,7 @@ async def call(body: dict):
             return {"say": f"Your phone will ring in a moment — answer it and I'll connect you to {c['name']}."}
         except Exception as e:
             return {"say": f"I couldn't place the call: {e}"}
-    return {"say": f"Tap the green button to call {c['name']}.",
+    return {"say": f"Tap the button to call {c['name']}.",
             "card": {"title": f"Call {c['name']}", "body": c.get("relation", ""),
                      "action": {"label": f"Call {c['name']}", "href": f"tel:{c['phone']}"}}}
 
@@ -449,7 +564,7 @@ async def ride(body: dict):
             f"&pickup[latitude]={HOME['lat']}&pickup[longitude]={HOME['lon']}&pickup[nickname]=Home"
             f"&dropoff[latitude]={place['lat']}&dropoff[longitude]={place['lon']}"
             f"&dropoff[nickname]={quote(dest.title())}&dropoff[formatted_address]={quote(place['address'])}")
-    return {"say": f"I've set up a ride to {place['address']}. Tap the green button, then confirm in Uber.",
+    return {"say": f"I've set up a ride to {place['address']}. Tap the button, then confirm in Uber.",
             "card": {"title": f"Ride to {dest.title()}", "body": place["address"],
                      "action": {"label": "Open Uber — ride is filled in", "href": href}}}
 
@@ -530,7 +645,66 @@ async def fetch_item(body: dict):
 # protocol (Welcome -> SettingsApplied -> FunctionCallRequest) to prove the whole
 # client path: auth, settings, function dispatch, responses, injected reminders.
 # --------------------------------------------------------------------------
-from fastapi import WebSocket
+from fastapi import WebSocket, WebSocketDisconnect
+from websockets.asyncio.client import connect
+from websockets.exceptions import ConnectionClosed, InvalidHandshake
+
+
+async def open_camera_relay():
+    url = os.environ.get("CAMERA_RELAY_URL", "wss://127.0.0.1:8765")
+    parsed = urlsplit(url)
+    if parsed.hostname not in ("127.0.0.1", "localhost", "::1") or parsed.scheme not in ("ws", "wss"):
+        raise ValueError("Camera relay must be a local WebSocket")
+    options = {"ssl": ssl.create_default_context(cafile=str(CERT))} if parsed.scheme == "wss" else {}
+    return await connect(url, open_timeout=4, close_timeout=1, max_size=2**20,
+                         compression=None, proxy=None, **options)
+
+
+@app.websocket("/api/camera")
+async def camera_stream(ws: WebSocket):
+    origin = ws.headers.get("origin")
+    if origin and urlsplit(origin).netloc != ws.headers.get("host"):
+        await ws.close(code=1008)
+        return
+    await ws.accept()
+    relay, tasks = None, []
+    try:
+        relay = await open_camera_relay()
+        await ws.send_json({"type": "camera_ready"})
+
+        async def forward():
+            count = 0
+            while True:
+                frame = await ws.receive_bytes()
+                if len(frame) > 2**20:
+                    await ws.close(code=1009)
+                    return
+                await relay.send(frame)
+                count += 1
+                if count == 1 or count % 20 == 0:
+                    await ws.send_json({"type": "frame_received", "count": count})
+
+        tasks = [asyncio.create_task(forward()), asyncio.create_task(relay.wait_closed())]
+        done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for task in done:
+            task.result()
+    except ssl.SSLCertVerificationError:
+        with suppress(RuntimeError, WebSocketDisconnect):
+            await ws.send_json({"type": "camera_error", "message": "The camera relay certificate does not match Pam's certificate. Ask your helper to restart the pipeline with phone/cert.pem."})
+    except (OSError, TimeoutError, ValueError, ConnectionClosed, InvalidHandshake):
+        with suppress(RuntimeError, WebSocketDisconnect):
+            await ws.send_json({"type": "camera_error", "message": "Camera is on, but the memory pipeline is unavailable. Ask your helper to start the pipeline on the laptop. Pam will retry automatically."})
+    except WebSocketDisconnect:
+        pass
+    finally:
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        if relay:
+            await relay.close()
+        with suppress(RuntimeError, WebSocketDisconnect):
+            await ws.close()
 
 
 @app.websocket("/api/fake-dg")

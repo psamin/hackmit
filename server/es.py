@@ -51,19 +51,48 @@ def index_memory(mem):
 
 def search(item, memory_jsonl: Path):
     """Newest 'placed' memory matching `item`. Returns (memory_dict, source)."""
+    hits, source = search_all(item, memory_jsonl, limit=1)
+    return (hits[0] if hits else None), source
+
+
+def _distinct(mems, limit):
+    """Newest memory per distinct place. Collapses repeated sightings of a thing that
+    has not moved, keeps genuinely different locations.
+
+    Note what this cannot do: nothing here knows whether two locations mean two pill
+    bottles or one that was moved. There is no instance identity - track IDs do not
+    survive a run, and the VLM only ever says "pill bottle". So the caller must present
+    these as places the item has been seen, with times, and let the person judge. Do not
+    phrase them as separate objects.
+    """
+    out, seen = [], set()
+    for m in sorted(mems, key=lambda m: m.get("logged_at") or "", reverse=True):
+        key = (m.get("location_description") or m.get("surface") or "").strip().lower()
+        if key and key not in seen:
+            seen.add(key)
+            out.append(m)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def search_all(item, memory_jsonl: Path, limit=3):
+    """Every distinct place `item` has been seen, newest first. Returns (list, source)."""
     es = client()
     if es:
         try:
-            r = es.search(index=INDEX, size=3, sort=[{"logged_at": "desc"}], query={
+            # Over-fetch so there is something left to dedupe: one object sitting in one
+            # place for an hour produces many near-identical memories.
+            r = es.search(index=INDEX, size=25, sort=[{"logged_at": "desc"}], query={
                 "bool": {"must": {"multi_match": {"query": " ".join(expand(item)) or item, "fields": [
                     "object^3", "location_description", "landmarks", "surface"], "fuzziness": "AUTO"}},
                     "filter": {"term": {"event": "placed"}}}})
-            hits = r["hits"]["hits"]
+            hits = [h["_source"] for h in r["hits"]["hits"]]
             if hits:
-                return hits[0]["_source"], "elasticsearch"
+                return _distinct(hits, limit), "elasticsearch"
         except Exception:
             pass  # fall through to the file
-    return search_jsonl(item, memory_jsonl), "jsonl"
+    return _distinct(search_jsonl_all(item, memory_jsonl), limit), "jsonl"
 
 
 # How users actually ask vs. how detectors label things. Both sides expand the
@@ -87,12 +116,18 @@ def expand(item):
 
 
 def search_jsonl(item, memory_jsonl: Path):
-    """Substring + token-overlap match over memory.jsonl, newest placed first."""
+    """Newest matching 'placed' memory in memory.jsonl, or None."""
+    hits = search_jsonl_all(item, memory_jsonl)
+    return max(hits, key=lambda m: m.get("logged_at", "")) if hits else None
+
+
+def search_jsonl_all(item, memory_jsonl: Path):
+    """Every matching 'placed' memory. Substring + token overlap; the file is small."""
     if not memory_jsonl.exists():
-        return None
+        return []
     terms = expand(item)
-    best = None
-    for line in memory_jsonl.read_text().splitlines():
+    out = []
+    for line in memory_jsonl.read_text(encoding="utf-8").splitlines():
         try:
             m = json.loads(line)
         except json.JSONDecodeError:
@@ -101,7 +136,6 @@ def search_jsonl(item, memory_jsonl: Path):
             continue
         hay = " ".join(str(m.get(k, "")) for k in ("object", "location_description", "surface")
                        ).lower() + " " + " ".join(m.get("landmarks") or []).lower()
-        score = sum(t in hay for t in terms) or (1 if terms & set(hay.split()) else 0)
-        if score and (best is None or m.get("logged_at", "") >= best.get("logged_at", "")):
-            best = m
-    return best
+        if sum(t in hay for t in terms) or (terms & set(hay.split())):
+            out.append(m)
+    return out
