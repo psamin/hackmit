@@ -76,6 +76,28 @@ def watch_for_grasp(control, policy, args):
             return True
         return False
 
+    def set_gripper(value, label):
+        """Drive the gripper alone, leaving the arm where it is. 1 is open, 0 is shut.
+
+        The voice agent needs this for "let go" and "hold on to it" - the person may want the bottle released
+        before the detector is convinced, or the grip kept while they get a better hold.
+        """
+        import numpy as _np
+
+        from dimos.control.tasks.trajectory_task.trajectory_task import TrajectoryExecutionStatus
+
+        from vla.scripted_demos import build_trajectory
+        here = control.get_joint_positions()
+        arm_now = [here[n] for n in OPENYAM_JOINTS[:-1]]
+        trajectory, duration = build_trajectory(OPENYAM_JOINTS, [here[n] for n in OPENYAM_JOINTS],
+                                                [{"name": label, "q": arm_now, "gripper": value}],
+                                                args.speed, 0.0, _np.random.default_rng(0))
+        accepted = control.execute_trajectory(trajectory).status is TrajectoryExecutionStatus.ACCEPTED
+        if accepted:
+            _time.sleep(duration + 0.3)
+        stage("gripper_open" if value else "gripper_closed", label)
+        return {"gripper": label, "accepted": accepted}
+
     def stage(name, detail=""):
         """Tell the voice agent where the arm is, so it can answer "what is it doing" at any moment.
 
@@ -137,8 +159,12 @@ def watch_for_grasp(control, policy, args):
                 say(prompts[n % len(prompts)])
 
             stage("waiting_for_hand", "gripper still closed, watching for a hand")
-            saw = wait_for_hand(camera_index=args.camera_index, timeout_s=args.catch_s,
-                                nag_s=args.nag_s, on_nag=nag)
+            if args.hand_url:
+                from vla.hand_release import wait_for_hand_remote
+                saw = wait_for_hand_remote(args.hand_url, timeout_s=args.catch_s, nag_s=args.nag_s, on_nag=nag)
+            else:
+                saw = wait_for_hand(camera_index=args.camera_index, timeout_s=args.catch_s,
+                                    nag_s=args.nag_s, on_nag=nag)
             stage("hand_seen" if saw else "hand_timeout", "releasing")
         else:
             print(f"waiting {args.catch_s:.0f}s for a hand underneath", flush=True)
@@ -212,10 +238,14 @@ def main() -> None:
                          "'catch, grab the bottle'. The release waits for it to finish, then --catch-s longer.")
     ap.add_argument("--catch-s", type=float, default=2.0,
                     help="--handover: seconds after the announcement before the gripper opens, to get a hand under it")
+    ap.add_argument("--hand-url", default=None,
+                    help="poll this for hand detection instead of opening a camera here, e.g. "
+                         "http://127.0.0.1:8000/api/hand-visible - the phone sees the catch, the wrist camera "
+                         "looks past it")
     ap.add_argument("--wait-for-hand", action="store_true",
                     help="--handover: hold the bottle until the camera sees a hand, nagging every --nag-s. "
                          "--catch-s becomes the timeout it releases on anyway.")
-    ap.add_argument("--nag-s", type=float, default=3.0,
+    ap.add_argument("--nag-s", type=float, default=7.0,
                     help="--wait-for-hand: seconds between spoken prompts while waiting for a hand")
     ap.add_argument("--voice-url", default=None,
                     help="the voice agent's push endpoint, e.g. http://127.0.0.1:8000/api/push. With it, "
@@ -329,7 +359,9 @@ def main() -> None:
     if args.control_port:
         serve_control({"preflight": policy.preflight_rollout, "start": start,
                        "stop": policy.stop_rollout,
-                       "handover": lambda: (handover(), policy.rollout_status())[1]},
+                       "handover": lambda: (handover(), policy.rollout_status())[1],
+                       "open": lambda: set_gripper(1.0, "open"),
+                       "close": lambda: set_gripper(0.0, "closed")},
                       policy.rollout_status, args.control_port)
         print(f"arm control on http://127.0.0.1:{args.control_port}", flush=True)
     try:

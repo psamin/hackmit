@@ -15,6 +15,11 @@ def arm(command: str, url: str = ARM_URL, timeout: float = 10.0) -> dict:
         return json.loads(resp.read())
 
 
+def gripper(state: str, url: str = ARM_URL) -> dict:
+    """Open or close the gripper where the arm already is. state is "open" or "close"."""
+    return arm(state, url)
+
+
 def fetch(url: str = ARM_URL) -> dict:
     """Preflight, then start. Returns the status; last_error says why it didn't start."""
     status = arm("preflight", url)

@@ -33,6 +33,41 @@ def hand_area(landmarks) -> float:
     return max(0.0, (max(xs) - min(xs))) * max(0.0, (max(ys) - min(ys)))
 
 
+def wait_for_hand_remote(poll_url: str, timeout_s: float = 30.0, nag_s: float = 7.0,
+                         on_nag: Callable[[int], None] | None = None) -> bool:
+    """Ask another service whether a hand is in front of its camera, rather than opening one here.
+
+    The phone is the camera pointed at the catch - the arm's looks outward from the hand-over pose. The server
+    already keeps the newest phone frame for the face tools, so this just polls its answer.
+    """
+    import json
+    import urllib.request
+
+    deadline, next_nag, nagged, streak, polls, seen_any = (
+        time.time() + timeout_s, time.time() + nag_s, 0, 0, 0, False)
+    while time.time() < deadline:
+        if time.time() >= next_nag:
+            if on_nag:
+                on_nag(nagged)
+            nagged += 1
+            next_nag = time.time() + nag_s
+        try:
+            with urllib.request.urlopen(poll_url, timeout=3) as response:
+                answer = json.loads(response.read())
+            polls += 1
+            seen_any = seen_any or answer.get("frame_age_s") is not None
+            streak = streak + 1 if answer.get("hand") else 0
+            if streak >= CONSECUTIVE:
+                print(f"hand seen by the phone camera (area {answer.get('area')}) - releasing", flush=True)
+                return True
+        except Exception as exc:
+            print(f"hand poll failed ({exc})", flush=True)
+        time.sleep(0.25)
+    why = "no hand seen" if seen_any else "the phone camera sent nothing (is its page open?)"
+    print(f"{why} in {timeout_s:.0f}s ({polls} polls) - releasing anyway", flush=True)
+    return False
+
+
 def wait_for_hand(camera_index: int = 0, timeout_s: float = 30.0, nag_s: float = 3.0,
                   on_nag: Callable[[int], None] | None = None,
                   area_min: float = HAND_AREA_MIN) -> bool:
@@ -53,7 +88,9 @@ def wait_for_hand(camera_index: int = 0, timeout_s: float = 30.0, nag_s: float =
     # and missing it leaves the arm gripping while the person waits with their palm out.
     detector = mp_hands.Hands(static_image_mode=False, max_num_hands=2,
                               min_detection_confidence=0.4, min_tracking_confidence=0.4)
-    deadline, next_nag, nagged, streak, frames = time.time() + timeout_s, time.time(), 0, 0, 0
+    # Wait a full interval before the first prompt: the caller has just announced the hand-over, and
+    # nagging immediately after it lands as talking over yourself.
+    deadline, next_nag, nagged, streak, frames = (time.time() + timeout_s, time.time() + nag_s, 0, 0, 0)
     try:
         while time.time() < deadline:
             if time.time() >= next_nag:

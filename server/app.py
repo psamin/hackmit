@@ -89,7 +89,7 @@ AGENT_ROUTES = {
     "/api/reminders": "get_reminders/set_reminder", "/api/weather": "get_weather",
     "/api/photo-info": "show_photo", "/api/ride": "request_ride",
     "/api/flights": "search_flights", "/api/fetch": "fetch_object",
-    "/api/arm-status": "get_arm_status",
+    "/api/arm-status": "get_arm_status", "/api/gripper": "set_gripper",
     "/api/time-and-place": "get_time_and_place", "/api/pill-status": "check_pills_taken",
 }
 QUIET = {"/api/push", "/api/dg-token", "/api/agent-config", "/api/health"}
@@ -142,8 +142,11 @@ def agent_config():
     keyterms = names + places + ["pill bottle", "medication", "Pam"]
     return {
         "listen": {"provider": {"type": "deepgram", "model": "flux-general-en",
-                                "keyterms": keyterms, "eot_threshold": 0.7,
-                                "eot_timeout_ms": 7000}},
+                                # Patience: an older person pauses mid-sentence to think, and cutting in
+                                # reads as hurrying them. 0.85 waits for stronger evidence the turn really
+                                # ended, at the cost of replying a beat later.
+                                "keyterms": keyterms, "eot_threshold": 0.85,
+                                "eot_timeout_ms": 10000}},
         "think": {"provider": {"type": "anthropic", "model": "claude-haiku-4-5"},
                   "prompt": SYSTEM_PROMPT, "functions": FUNCTIONS},
         "speak": {"provider": {"type": "deepgram", "model": "aura-2-thalia-en"}},
@@ -227,6 +230,9 @@ FUNCTIONS = [
        {"type": "object", "properties": {"destination": _str("place name, e.g. 'home', 'airport', 'doctor'")}, "required": ["destination"]}, defer=True),
     fn("get_arm_status", "What the robot arm is doing right now. Use when they ask where it is, "
                          "what is taking so long, or whether it has their item yet."),
+    fn("set_gripper", "Open or close the robot arm's gripper where it is. Use when they say let go, "
+                      "drop it, I have it, or hold on to it.",
+       {"type": "object", "properties": {"state": _str("'open' or 'close'")}, "required": ["state"]}),
     fn("fetch_object", "Send the robot arm to fetch an item it knows where to find",
        {"type": "object", "properties": {"item": _str("the item")}, "required": ["item"]}, defer=True),
 ]
@@ -958,6 +964,55 @@ async def flights(destination: str, date: str = ""):
 # --------------------------------------------------------------------------
 # Arm: fetch goes to the VLA policy server (vla/arm_client.py), if it's up.
 # --------------------------------------------------------------------------
+_hands_detector = None
+
+
+@app.get("/api/hand-visible")
+async def hand_visible(max_age_s: float = 3.0):
+    """Is a hand in front of the phone's camera right now?
+
+    The arm's own camera looks outward from the hand-over pose and barely sees the space under the gripper,
+    which is exactly where the person puts their hand. The phone is pointed at the scene by whoever is holding
+    it, so it is the camera that can actually see the catch.
+    """
+    global _hands_detector
+    frame, age = _last_frame, time.time() - _last_frame_ts if _last_frame_ts else None
+    if frame is None or age is None or age > max_age_s:
+        return {"hand": False, "area": 0.0, "reason": "no recent phone frame", "frame_age_s": age}
+    try:
+        import cv2
+        import numpy as np
+
+        sys.path.insert(0, str(ROOT))
+        from vla.hand_release import hand_area
+
+        if _hands_detector is None:
+            from mediapipe.python.solutions import hands as mp_hands
+            _hands_detector = mp_hands.Hands(static_image_mode=False, max_num_hands=2,
+                                             min_detection_confidence=0.4, min_tracking_confidence=0.4)
+        img = cv2.imdecode(np.frombuffer(frame, np.uint8), cv2.IMREAD_COLOR)
+        if img is None:
+            return {"hand": False, "area": 0.0, "reason": "frame did not decode"}
+        found = _hands_detector.process(cv2.cvtColor(img, cv2.COLOR_BGR2RGB)).multi_hand_landmarks or []
+        area = max((hand_area(h) for h in found), default=0.0)
+        return {"hand": bool(found), "area": round(area, 4), "frame_age_s": round(age, 2)}
+    except Exception as exc:
+        return {"hand": False, "area": 0.0, "reason": f"{type(exc).__name__}: {exc}"}
+
+
+@app.post("/api/gripper")
+async def gripper_control(body: dict):
+    """Open or close the arm's gripper. The person may want it let go before the camera is convinced."""
+    want = "open" if str(body.get("state", "open")).lower().startswith("o") else "close"
+    try:
+        sys.path.insert(0, str(ROOT))
+        from vla.arm_client import gripper
+        gripper(want, os.environ.get("ARM_URL", "http://127.0.0.1:8020"))
+        return {"say": "Opening my grip now." if want == "open" else "Holding on to it."}
+    except Exception:
+        return {"say": "I can't reach the arm right now."}
+
+
 @app.post("/api/fetch")
 async def fetch_item(body: dict):
     try:
