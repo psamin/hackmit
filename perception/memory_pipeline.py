@@ -101,6 +101,11 @@ def pick_device(requested=None):
     return "cpu"
 
 
+def log(tag, msg):
+    """Same line format as vlm.py and server/app.py, so the three terminals read alike."""
+    print(f"{time.strftime('%H:%M:%S')} [{tag:<6}] {msg}", flush=True)
+
+
 def overlap(a, b):
     ix = max(0, min(a[2], b[2]) - max(a[0], b[0]))
     iy = max(0, min(a[3], b[3]) - max(a[1], b[1]))
@@ -239,9 +244,11 @@ def main():
     REST_MIN = max(2, round(REST_MIN_S * args.fps))
     LOST_REST_MIN = max(1, round(LOST_REST_MIN_S * args.fps))
     MOVE_THR = MOVE_THR_PER_S / args.fps
-    print(f"device: {args.device}  fps={args.fps} imgsz={args.imgsz} conf={args.conf}", flush=True)
-    print(f"gate: arm after {ACTIVE_MIN} frames of motion, fire after {REST_MIN} frames at rest "
-          f"({REST_MIN / args.fps:.1f}s), move threshold {MOVE_THR:.4f}/frame", flush=True)
+    log("START", f"device={args.device} fps={args.fps} imgsz={args.imgsz} conf={args.conf} "
+                 f"static_camera={args.static_camera} arm={'off' if args.no_arm else 'on'}")
+    log("START", f"gate: arm after {ACTIVE_MIN} frames of motion, fire after {REST_MIN} frames "
+                 f"at rest ({REST_MIN / args.fps:.1f}s), move threshold {MOVE_THR:.4f}/frame")
+    log("START", f"targets: {', '.join(targets)}   (+ '{ARM}' as the arm/decoy class)")
     targets = [t.strip() for t in args.targets.split(",")]
     out = Path(args.out); (out / "events").mkdir(parents=True, exist_ok=True); (out / "last_seen").mkdir(exist_ok=True)
     model = YOLOE(args.weights); model.set_classes(targets + [ARM])
@@ -261,7 +268,7 @@ def main():
     if not args.no_vlm:
         from vlm import MODEL, cost_usd, describe_event
         vlm, vlm_cost = describe_event, cost_usd
-        print(f"vlm: {MODEL}", flush=True)
+        log("START", f"vlm: {MODEL} (an event costs roughly $0.005)")
 
     buffer = collections.deque(maxlen=int(BUFFER_S * args.fps))
     tracks, last_seen, reappeared, snap_t = {}, {}, {}, {}
@@ -272,6 +279,9 @@ def main():
     # so it is guarded: dict item assignment is atomic in CPython but a counter is not.
     hud = {"events": 0, "pending": 0, "memory": None, "last_event": "",
            "calls": 0, "in_tok": 0, "out_tok": 0}
+    # What was visible last frame. Logging every frame would be a flood at 5fps and
+    # unreadable; what you actually want to see is the moment something appears or goes.
+    seen_before = set()
     hud_lock = threading.Lock()
     timing = collections.defaultdict(float)
     n_frames, n_events, t_wall, last_prune = 0, 0, time.perf_counter(), -1e18
@@ -310,7 +320,8 @@ def main():
             cv2.imwrite(str(path), annotate(fr, b if name == "after" else None, n))
             ev["frames"].append(str(path))
         events_f.write(json.dumps(ev) + "\n"); events_f.flush()
-        print(f"[{t:7.1f}s] EVENT {fire} {n} #{i}", flush=True)
+        log("EVENT", f"#{n_events} {fire} {n} (track {i}) at t={t:.1f}s, "
+                     f"{len(ev['frames'])} frame(s) -> events.jsonl")
         with hud_lock:
             hud["events"] = n_events
             hud["last_event"] = f"{fire} {n}"
@@ -321,6 +332,7 @@ def main():
             # joined at the end: a VLM call takes seconds, events fire right up to the last
             # frame, and without the join the interpreter exits first and those memories are
             # silently lost -- exactly the ones a short demo clip produces.
+            log("VLM", f"queued event {n_events} ({hud['pending']} in flight)")
             th = threading.Thread(target=run_vlm, args=(ev,), daemon=True)
             th.start()
             vlm_threads[:] = [x for x in vlm_threads if x.is_alive()] + [th]
@@ -333,7 +345,7 @@ def main():
         except Exception as exc:
             mem = {"event": "error", "object": ev["object"], "confidence": 0.0,
                    "location_description": f"{type(exc).__name__}: {exc}"}
-            print(f"event {ev['id']}: VLM failed: {type(exc).__name__}: {exc}", flush=True)
+            log("VLM", f"event {ev['id']} FAILED: {type(exc).__name__}: {exc}")
         with hud_lock:
             hud["pending"] -= 1
             if mem:
@@ -387,6 +399,18 @@ def main():
         centres = {}
         buffer.append((t, frame))
         present = {n for n in names if n in targets}
+        if present != seen_before:
+            best = {}
+            for nm, cf in zip(names, (r.boxes.conf.cpu().numpy() if len(r.boxes) else [])):
+                if nm in present:
+                    best[nm] = max(best.get(nm, 0.0), float(cf))
+            gone = seen_before - present
+            if best:
+                log("DETECT", "seeing " + ", ".join(f"{k} {v:.2f}" for k, v in sorted(best.items()))
+                              + (f"   (lost: {', '.join(sorted(gone))})" if gone else ""))
+            elif gone:
+                log("DETECT", f"nothing in view (lost: {', '.join(sorted(gone))})")
+            seen_before = present
         for n in present:
             if n not in last_seen or t - last_seen[n] > UNSEEN_S:
                 reappeared[n] = True
@@ -515,6 +539,9 @@ def main():
              "vlm_calls": hud["calls"], "vlm_input_tokens": hud["in_tok"], "vlm_output_tokens": hud["out_tok"]}
     if vlm_cost:
         stats["vlm_cost_usd"] = round(vlm_cost(hud["in_tok"], hud["out_tok"]), 4)
+    log("DONE", f"{n_frames} frames, {n_events} events, {hud['calls']} VLM call(s), "
+                f"{hud['in_tok']}/{hud['out_tok']} tokens"
+                + (f", ${stats['vlm_cost_usd']:.4f}" if "vlm_cost_usd" in stats else ""))
     print(json.dumps(stats))
     json.dump(stats, open(out / "stats.json", "w"))
 

@@ -55,9 +55,34 @@ def search(item, memory_jsonl: Path):
     return (hits[0] if hits else None), source
 
 
+# Words that carry no information about WHICH place is meant.
+_STOP = {"the", "a", "an", "on", "in", "of", "to", "at", "next", "near", "and", "with",
+         "is", "it", "its", "left", "right", "front", "behind", "side", "roughly",
+         "middle", "centre", "center", "there", "by", "beside", "under", "over"}
+
+
+def _place_words(m):
+    text = f"{m.get('location_description') or ''} {m.get('surface') or ''}".lower()
+    return {w.strip(".,;:\"'") for w in text.split()} - _STOP - {""}
+
+
+def _same_place(a, b, thr=0.45):
+    """Jaccard over content words. The descriptions are free text from a VLM looking at
+    different frames of the same scene, so they never repeat verbatim -- "a gray backpack
+    ... recycling bins" and "a backpack on the ground ... recycling boxes" are one chair.
+    Exact-string dedupe let those through as two places, which is worse than useless: it
+    tells someone their medication is in two rooms when it is in one.
+    """
+    wa, wb = _place_words(a), _place_words(b)
+    if not wa or not wb:
+        return False
+    return len(wa & wb) / len(wa | wb) >= thr
+
+
 def _distinct(mems, limit):
     """Newest memory per distinct place. Collapses repeated sightings of a thing that
-    has not moved, keeps genuinely different locations.
+    has not moved -- including the same spot described in different words - and keeps
+    genuinely different locations.
 
     Note what this cannot do: nothing here knows whether two locations mean two pill
     bottles or one that was moved. There is no instance identity - track IDs do not
@@ -65,12 +90,13 @@ def _distinct(mems, limit):
     these as places the item has been seen, with times, and let the person judge. Do not
     phrase them as separate objects.
     """
-    out, seen = [], set()
+    out = []
     for m in sorted(mems, key=lambda m: m.get("logged_at") or "", reverse=True):
-        key = (m.get("location_description") or m.get("surface") or "").strip().lower()
-        if key and key not in seen:
-            seen.add(key)
-            out.append(m)
+        if not _place_words(m):
+            continue
+        if any(_same_place(m, kept) for kept in out):
+            continue          # same spot, older wording: the newest one already stands
+        out.append(m)
         if len(out) >= limit:
             break
     return out

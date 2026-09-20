@@ -53,6 +53,42 @@ app = FastAPI(title="Pam")
 # --------------------------------------------------------------------------
 # Deepgram browser auth: mint a short-lived JWT so the API key stays server-side.
 # --------------------------------------------------------------------------
+def log(tag, msg):
+    """Same line format as perception/memory_pipeline.py and vlm.py, so all three
+    terminals read alike during a demo."""
+    print(f"{datetime.now():%H:%M:%S} [{tag:<6}] {msg}", flush=True)
+
+
+# Route -> the tool name the model actually emitted, so the terminal shows what Pam
+# decided to do rather than which URL the page happened to fetch.
+AGENT_ROUTES = {
+    "/api/find": "find_object", "/api/calendar": "get_schedule",
+    "/api/reminders": "get_reminders/set_reminder", "/api/weather": "get_weather",
+    "/api/photo-info": "show_photo", "/api/message": "send_message",
+    "/api/call": "call_caregiver", "/api/ride": "request_ride",
+    "/api/flights": "search_flights", "/api/fetch": "fetch_object",
+}
+QUIET = {"/api/push", "/api/dg-token", "/api/agent-config", "/api/health"}
+
+
+@app.middleware("http")
+async def trace(request, call_next):
+    """One place that sees every call the page makes, so nothing agentic goes unlogged
+    just because someone added an endpoint and forgot to print in it."""
+    path = request.url.path
+    tool = AGENT_ROUTES.get(path)
+    if tool:
+        args = dict(request.query_params)
+        log("AGENT", f"{tool}({', '.join(f'{k}={v!r}' for k, v in args.items())})")
+    t0 = time.perf_counter()
+    response = await call_next(request)
+    if tool:
+        log("AGENT", f"{tool} -> HTTP {response.status_code} in {(time.perf_counter()-t0)*1000:.0f}ms")
+    elif path.startswith("/api/") and path not in QUIET:
+        log("API", f"{request.method} {path} -> {response.status_code}")
+    return response
+
+
 @app.get("/api/dg-token")
 async def dg_token():
     key = os.environ.get("DEEPGRAM_API_KEY")
@@ -168,7 +204,9 @@ def memory_notice(mem):
     key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:24]
     obj = str(mem.get("object") or "an object")
     certain = mem.get("event") == "placed" and obj != "other" and float(mem.get("confidence") or 0) >= .4
+    frame = mem.get("after_frame") or (mem.get("frames") or [None])[-1]
     return {"id": key, "object": obj, "logged_at": mem.get("logged_at"),
+            "image": ("/frames/" + str(frame).replace("\\", "/")) if frame else None,
             "title": "Memory saved" if certain else "Observation saved",
             "detail": f"{obj.capitalize()}: {mem.get('location_description') or 'location recorded'}" if certain
                       else f"A new observation of {obj}. Its resting place is not confirmed."}
@@ -260,6 +298,9 @@ async def camera_page():
     return FileResponse(PHONE / "index.html")
 
 
+app.mount("/assets", StaticFiles(directory=PHONE / "assets"), name="assets")
+
+
 @app.get("/photos/{name}")
 async def photo(name: str):
     """Family photos live in server/photos as <firstname>.jpg, case-insensitive."""
@@ -315,6 +356,7 @@ async def find(q: str):
     """
     from es import search_all
     mems, source = search_all(q, MEMORY_JSONL, limit=3)
+    log("DB", f"search {q!r} -> {len(mems)} distinct place(s) from {source}")
     if not mems:
         return {"say": f"I'm sorry, I didn't see where your {q} went."}
 
@@ -342,6 +384,7 @@ async def find(q: str):
     frame = mems[0].get("after_frame") or (mems[0].get("frames") or [None])[-1]
     if frame:
         out["card"]["image"] = "/frames/" + str(frame).replace("\\", "/")
+    log("AGENT", f'find_object says: "{say}"')
     return out
 
 
@@ -349,7 +392,19 @@ async def find(q: str):
 async def es_index(mem: dict):
     """vlm.py dual-writes each memory here; ES indexes it. No-op without ES."""
     from es import index_memory
-    return {"indexed": index_memory(mem)}
+    ok = index_memory(mem)
+    log("DB", f"index {mem.get('object', '?')!r} \"{(mem.get('location_description') or '')[:60]}\" -> "
+              + ("elasticsearch OK" if ok else "NOT INDEXED (ELASTICSEARCH_URL unset or ES down)"))
+    return {"indexed": ok}
+
+
+@app.post("/api/log")
+async def page_log(body: dict):
+    """The phone reports into the laptop terminal: camera state, what Deepgram asked
+    for, session start/stop. Otherwise the whole browser half of the demo is invisible
+    to whoever is watching the screen with the logs on it."""
+    log("PHONE", f"{body.get('tag', 'page')}: {body.get('msg', '')}")
+    return {"ok": True}
 
 
 @app.post("/api/es/sync")
@@ -664,6 +719,10 @@ async def open_camera_relay():
 async def camera_stream(ws: WebSocket):
     origin = ws.headers.get("origin")
     if origin and urlsplit(origin).netloc != ws.headers.get("host"):
+        print(f"Camera origin mismatch: origin={urlsplit(origin).netloc!r}, host={ws.headers.get('host')!r}", flush=True)
+        await ws.accept()
+        await ws.send_json({"type": "camera_error", "retry": False,
+                            "message": "This page's address is blocking the camera connection. Open Pam directly at http://127.0.0.1:8000/ on your laptop, or the laptop's HTTPS address on your phone, not the IDE preview."})
         await ws.close(code=1008)
         return
     await ws.accept()

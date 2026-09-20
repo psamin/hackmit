@@ -75,6 +75,12 @@ def cost_usd(input_tokens, output_tokens, model=MODEL):
     return input_tokens / 1e6 * per_in + output_tokens / 1e6 * per_out
 
 
+def log(tag, msg):
+    """One line per thing that happens, the same shape in every process, so a demo can
+    be followed in the terminal instead of inferred from silence afterwards."""
+    print(f"{datetime.now():%H:%M:%S} [{tag:<6}] {msg}", flush=True)
+
+
 _write_lock = threading.Lock()
 client = anthropic.Anthropic()
 
@@ -124,18 +130,20 @@ def describe_event(ev, memory_path):
                     f"Candidate objects: {', '.join(candidates)}. "
                     f"Detector's best guess, which may be wrong: {ev['object']}. "
                     f"Trigger: {ev['type']}."})
+    log("VLM", f"-> {MODEL}  event {ev['id']} {ev['type']} {ev['object']}  "
+               f"{len(ev['frames'])} frame(s), candidates: {', '.join(candidates)}")
     t0 = time.perf_counter()
     resp = client.messages.parse(model=MODEL, max_tokens=MAX_TOKENS_MEMORY, system=SYSTEM,
                                  output_config={"effort": EFFORT},
                                  messages=[{"role": "user", "content": content}], output_format=Memory, **FALLBACK)
     latency = time.perf_counter() - t0
     if resp.stop_reason == "refusal":
-        print(f"event {ev['id']}: refused", flush=True)
+        log("VLM", f"<- event {ev['id']} REFUSED; no memory written")
         return None
     if resp.stop_reason == "max_tokens":
         # The schema is small, so this means thinking ate the budget. Raise
         # MAX_TOKENS_MEMORY rather than lowering effort, which would cost accuracy.
-        print(f"event {ev['id']}: hit max_tokens ({MAX_TOKENS_MEMORY}); no memory written", flush=True)
+        log("VLM", f"<- event {ev['id']} hit max_tokens ({MAX_TOKENS_MEMORY}); no memory written")
         return None
     mem = {"logged_at": datetime.now().isoformat(timespec="seconds"), "video_t": ev["t"], "event_id": ev["id"],
            "trigger": ev["type"], **resp.parsed_output.model_dump(),
@@ -145,17 +153,31 @@ def describe_event(ev, memory_path):
            "vlm_latency_s": round(latency, 2), "input_tokens": resp.usage.input_tokens, "output_tokens": resp.usage.output_tokens}
     with _write_lock, open(memory_path, "a") as f:
         f.write(json.dumps(mem) + "\n")
+    corrected = "" if mem["object"] == ev["object"] else f"  (detector said {ev['object']})"
+    log("VLM", f"<- event {ev['id']} {mem['event']} {mem['object']}{corrected}  "
+               f"conf {mem['confidence']}  {latency:.1f}s  "
+               f"{mem['input_tokens']}/{mem['output_tokens']} tok  "
+               f"${cost_usd(mem['input_tokens'], mem['output_tokens']):.4f}")
+    log("VLM", f"   \"{mem['location_description']}\"")
+    log("DB", f"memory.jsonl <- event {ev['id']} appended ({memory_path})")
     # Mirror into Elasticsearch via the Pam server so the voice agent can search it.
     # memory.jsonl is still the source of truth; a dead endpoint must not lose the memory.
+    # It used to swallow the outcome entirely, which meant a down index looked exactly
+    # like a working one until someone asked a question and got nothing.
+    server = os.environ.get("PAM_SERVER", "http://127.0.0.1:8000")
     try:
         import urllib.request
-        urllib.request.urlopen(urllib.request.Request(
-            os.environ.get("PAM_SERVER", "http://127.0.0.1:8000") + "/api/es/index",
-            data=json.dumps(mem).encode(), headers={"Content-Type": "application/json"}),
-            timeout=3)
-    except Exception:
-        pass
-    print(f"event {ev['id']}: {mem['event']} {mem['object']} -> {mem['location_description']} ({latency:.1f}s)", flush=True)
+        with urllib.request.urlopen(urllib.request.Request(
+                server + "/api/es/index",
+                data=json.dumps(mem).encode(), headers={"Content-Type": "application/json"}),
+                timeout=3) as r:
+            body = json.loads(r.read() or b"{}")
+        ok = bool(body.get("indexed"))
+        log("DB", f"elasticsearch <- event {ev['id']} "
+                  + ("indexed OK" if ok else f"NOT indexed (is ELASTICSEARCH_URL set?) {body}"))
+    except Exception as exc:
+        log("DB", f"elasticsearch <- event {ev['id']} FAILED: {type(exc).__name__}: {exc} "
+                  f"(memory.jsonl still has it; is {server} running?)")
     return mem
 
 
@@ -181,6 +203,7 @@ def ask(question, memory_path):
                      f"{m['location_description']} (confidence {m['confidence']}{doubt})")
     if not lines:
         lines = ["(nothing recorded yet)"]
+    log("ASK", f"-> {MODEL}  \"{question}\"  over {len(lines)} memory line(s)")
     t0 = time.perf_counter()
     resp = client.messages.create(
         model=MODEL, max_tokens=MAX_TOKENS_ANSWER, output_config={"effort": EFFORT},
@@ -196,6 +219,8 @@ def ask(question, memory_path):
     if resp.stop_reason == "refusal":
         return "Sorry, I can't answer that one.", time.perf_counter() - t0
     text = "".join(b.text for b in resp.content if b.type == "text")
+    log("ASK", f"<- \"{text}\"  ({time.perf_counter() - t0:.1f}s, "
+               f"{resp.usage.input_tokens}/{resp.usage.output_tokens} tok)")
     return text, time.perf_counter() - t0
 
 
