@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Pam — caregiver dashboard</title>
+<title>Pam oversight</title>
 <style>
   :root {
     --bg: #f6f7fb; --card: #ffffff; --ink: #1c2233; --sub: #5a6478; --line: #dde1ec;
@@ -61,14 +61,14 @@
   <section id="loading" class="card" aria-live="polite"><p class="sub">Checking access…</p></section>
 
   <section id="off" class="card" hidden>
-    <h1>Caregiver dashboard</h1>
-    <p>The dashboard isn't set up yet.</p>
+    <h1>Pam oversight</h1>
+    <p>Pam oversight isn't set up yet.</p>
     <p class="sub">To turn it on, add a line <code>CAREGIVER_PIN=…</code> to <code>server/.env</code>
       (at least 6 characters) and restart the server. Until then it stays off, so no one can open it by accident.</p>
   </section>
 
   <section id="login" class="card" hidden>
-    <h1>Caregiver dashboard</h1>
+    <h1>Pam oversight</h1>
     <p class="sub">This page shows a patient's medication information. Enter the caregiver PIN to continue.</p>
     <form id="login-form" autocomplete="on">
       <label for="pin">Caregiver PIN</label>
@@ -81,7 +81,7 @@
   <div id="app" hidden>
     <header>
       <div>
-        <h1>Caregiver dashboard</h1>
+        <h1>Pam oversight</h1>
         <p class="sub">Medication information for the person Pam looks after.</p>
       </div>
       <button id="logout" class="quiet" type="button">Sign out</button>

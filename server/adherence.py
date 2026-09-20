@@ -8,8 +8,8 @@
 --------------------------------------------------------------------------------
 WHAT COUNTS, AND WHAT DOES NOT
 --------------------------------------------------------------------------------
-This measures TAPS, never intake. A streak is "days in a row you told Pam you took all of your medication
-on time". The camera does not count, and nothing here can know a pill was swallowed. That is why the
+This measures ANSWERS, never intake: a tap on the card or a spoken yes to Pam (recorded as `via`). A streak is
+"days in a row you told Pam you took all of your medication on time". The camera does not count, and nothing here can know a pill was swallowed. That is why the
 words are always "marked" and never "took" when Pam speaks about it.
 
 Each scheduled dose is in one of these states:
@@ -108,7 +108,8 @@ class DoseSummary:
     name: str
     due_ts: float
     state: str
-    confirmed_ts: float | None = None       # when the person tapped, on time or late
+    confirmed_ts: float | None = None       # when the person tapped or said it, on time or late
+    via: str | None = None                  # "tap" or "voice"
 
 
 @dataclass
@@ -154,7 +155,7 @@ def summarize(doses, now: float, upcoming=()) -> Summary:
             continue                          # every dose that day was skipped: nothing happened, so it is not a day
         run = _step(run, state)
         best = max(best, run)
-        days.append(DaySummary(day, state, [DoseSummary(m.name or "medication", m.due_ts, s, m.confirmed_ts or m.late_ts)
+        days.append(DaySummary(day, state, [DoseSummary(m.name or "medication", m.due_ts, s, m.confirmed_ts or m.late_ts, getattr(m, "via", None))
                                             for m, s in zip(members, states) if s != SKIPPED]))
     today_complete = bool(days) and days[-1].day == today and days[-1].state == COMPLETE
     return Summary(days=days, streak=run, best=best, today=today, today_complete=today_complete)
@@ -203,7 +204,7 @@ def how_am_i_doing(summary: Summary) -> str:
 
 
 def public(summary: Summary, days: int = 14) -> dict:
-    """For the caregiver dashboard: the last `days` days, exactly as recorded, honestly labelled."""
+    """For Pam oversight (the caregiver's page): the last `days` days, exactly as recorded, honestly labelled."""
     since = summary.today - timedelta(days=days - 1)
     rate = on_time_rate(summary)
     return {
@@ -211,7 +212,8 @@ def public(summary: Summary, days: int = 14) -> dict:
         "on_time_rate_7d": None if rate is None else round(rate, 3),
         "days": [{"date": day.day.isoformat(), "state": day.state,
                   "doses": [{"name": d.name, "due": datetime.fromtimestamp(d.due_ts).strftime("%H:%M"), "state": d.state,
-                             "tapped_at": None if d.confirmed_ts is None else datetime.fromtimestamp(d.confirmed_ts).strftime("%H:%M")}
+                             "tapped_at": None if d.confirmed_ts is None else datetime.fromtimestamp(d.confirmed_ts).strftime("%H:%M"),
+                             "via": d.via if d.confirmed_ts is not None else None}
                             for d in day.doses]}
                  for day in summary.days if day.day >= since],
     }

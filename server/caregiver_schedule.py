@@ -68,7 +68,7 @@ async def current_schedule():
 
 @router.get("/api/caregiver/adherence")
 async def adherence_view(days: int = 14):
-    """What the dashboard shows: each recent day, each dose and whether it was tapped on time, late or not at all.
+    """What Pam oversight shows: each recent day, each dose and whether it was tapped on time, late or not at all.
     Labelled as recorded, never as "taken": these are taps. The caregiver sees this even if the patient's
     streak is hidden."""
     days = max(1, min(int(days), 90))

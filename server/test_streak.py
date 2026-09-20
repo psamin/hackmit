@@ -297,7 +297,7 @@ class CaregiverRoute(Streaks):
         with mock.patch.object(d, "time", SimpleNamespace(time=lambda: day_at(2, 8, 30), monotonic=time.monotonic)):
             body = self.client.get("/api/caregiver/adherence").json()
         self.assertEqual([x["state"] for x in body["days"]], ["complete", "late", "pending"])
-        self.assertEqual(body["days"][0]["doses"][0], {"name": "Metformin", "due": "08:00", "state": "on_time", "tapped_at": "08:05"})
+        self.assertEqual(body["days"][0]["doses"][0], {"name": "Metformin", "due": "08:00", "state": "on_time", "tapped_at": "08:05", "via": "tap"})
         self.assertEqual(body["days"][1]["doses"][0]["state"], "late")
         self.assertEqual(body["days"][1]["doses"][0]["tapped_at"], "09:45")
         self.assertEqual((body["streak"], body["best"]), (1, 1))

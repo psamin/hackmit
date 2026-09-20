@@ -5,6 +5,8 @@
     PAM_DOSE_DEMO=1                nudges after 20 s / 40 s instead of 10 / 20 min, for a live demo
     PAM_SCHEDULE_REMINDERS=off     stop only the SCHEDULE-driven reminders (the reminder-based flow keeps working)
     touch server/.schedule_reminders_off    the same, instantly, no restart
+    PAM_VOICE_CONFIRM=off          Pam stops recording spoken yes / not-yet answers and stops asking after a handoff
+    touch server/.voice_confirm_off         the same, instantly, no restart (taps on the card keep working)
 
 --------------------------------------------------------------------------------
 THE PRINCIPLE: the camera is evidence, a person's tap is the record
@@ -85,6 +87,7 @@ LOG = HERE / "doses.jsonl"
 KILL_FILE = HERE / ".dose_check_off"
 SCHEDULE_KILL_FILE = HERE / ".schedule_reminders_off"
 STREAK_KILL_FILE = HERE / ".streak_off"
+VOICE_KILL_FILE = HERE / ".voice_confirm_off"
 CONTACTS = HERE / "contacts.json"
 
 MEDICATION = re.compile(r"\b(medic\w*|meds?|pills?|tablets?|capsules?|prescriptions?|doses?)\b", re.I)
@@ -113,9 +116,15 @@ def schedule_enabled() -> bool:
 
 def streak_visible() -> bool:
     """May Pam show the patient their streak? On by default. `PAM_STREAK=off` or `touch server/.streak_off`
-    hides it from the patient; the caregiver still sees the numbers on the dashboard."""
+    hides it from the patient; the caregiver still sees the numbers in Pam oversight."""
     off = os.environ.get("PAM_STREAK", "on").strip().lower() in {"0", "off", "false", "no", "disabled"}
     return enabled() and not off and not STREAK_KILL_FILE.exists()
+
+
+def voice_confirm_enabled() -> bool:
+    """May Pam record a SPOKEN answer, and ask the question after the arm hands over the pills? On by default."""
+    off = os.environ.get("PAM_VOICE_CONFIRM", "on").strip().lower() in {"0", "off", "false", "no", "disabled"}
+    return enabled() and not off and not VOICE_KILL_FILE.exists()
 
 
 def demo_mode() -> bool:
@@ -131,9 +140,10 @@ class Timing:
     evidence_window_s: float = 3600  # bottle moves this long after the reminder count for it
     min_confidence: float = 0.4   # the same bar server/app.py uses to call a memory certain
     announce_grace_s: float = 900  # after this, a scheduled dose is asked about, not announced
+    handoff_ask_s: float = 120    # after the arm hands over the pills, wait this long before asking (they need time to take them)
 
 
-DEMO = Timing(nudge1_s=20, nudge2_s=40, min_gap_s=10, expire_s=300, evidence_window_s=300, announce_grace_s=60)
+DEMO = Timing(nudge1_s=20, nudge2_s=40, min_gap_s=10, expire_s=300, evidence_window_s=300, announce_grace_s=60, handoff_ask_s=8)
 
 
 def timing() -> Timing:
@@ -192,6 +202,9 @@ class Dose:
     announced: bool = False              # the "it's time for..." prompt (or its late question) was given
     unconfirmed: bool = False            # the window closed and no tap was recorded
     skipped: bool = False                # not prompted: same medication taken recently, or daily maximum reached
+    via: str | None = None               # how the answer came in: "tap" or "voice"
+    handoff_at: float | None = None      # the arm handed over the pills; the question is due handoff_ask_s later
+    handoff_asked: bool = False          # ...and it has been asked
 
     @property
     def is_open(self) -> bool:
@@ -222,9 +235,15 @@ def replay(events: list[dict]) -> dict:
             elif kind == "asked":
                 d.asked, d.last_spoken = True, ts
             elif kind == "confirmed":
-                d.confirmed_ts = d.confirmed_ts or ts
+                if d.confirmed_ts is None:
+                    d.confirmed_ts, d.via = ts, e.get("via") or "tap"
             elif kind == "confirmed_late":
-                d.late_ts = d.late_ts or ts
+                if d.late_ts is None:
+                    d.late_ts, d.via = ts, e.get("via") or "tap"
+            elif kind == "handoff":
+                d.handoff_at = d.handoff_at or ts
+            elif kind == "handoff_asked":
+                d.handoff_asked, d.last_spoken = True, ts
             elif kind == "nudge":
                 d.nudges, d.last_spoken = max(d.nudges, int(e.get("n", 1))), ts
             elif kind == "escalated":
@@ -255,6 +274,11 @@ def read_memories(path: Path) -> list[dict]:
 
 def is_medication(text: str) -> bool:
     return bool(MEDICATION.search(text or ""))
+
+
+def is_pill_item(text: str) -> bool:
+    """Is what the arm was sent for the medication? "pill bottle", "my medicine", "the tablets"."""
+    return bool(is_medication(text) or PILL_OBJECT.search(text or ""))
 
 
 def find_evidence(memories: list[dict], since: float, t: Timing, until: float | None = None) -> dict | None:
@@ -349,6 +373,16 @@ def escalate_group_messages(members: list[Dose], cg: dict) -> list[dict]:
             "body": f"I don't have a record that you took your {_names(members)}. {cg['name']} can help you check.",
             "action2": _group_actions(members[0].group, len(members))["action"]}
     return [{"type": "speak", "text": say}, {"type": "card", "card": card}]
+
+
+def handoff_messages(members: list[Dose], cg: dict) -> list[dict]:
+    """The question after the arm hands over the pills. Neutral on purpose: a person with memory loss tends to
+    agree with whatever they are asked, so it offers both answers, and it never says to take anything."""
+    what = _names(members) if members[0].source == "schedule" else "pills"
+    say = f"Have you taken your {what} yet, or not yet? If you're not sure, please check with {cg['name']} first."
+    body = (_card_lines(members) if members[0].source == "schedule" else "Your pills") + f"\n\nIf you're not sure, check with {cg['name']} first."
+    actions = _group_actions(members[0].group, len(members)) if members[0].source == "schedule" else _answer_actions(members[0].id)
+    return [{"type": "speak", "text": say}, {"type": "card", "card": {"title": "Your pills", "body": body, **actions}}]
 
 
 # --------------------------------------------------------------------------------
@@ -453,6 +487,58 @@ def _plan_scheduled(doses: dict, slots: list, meds: dict, memories: list[dict], 
             out.append(({"type": "escalated", "doses": ids}, escalate_group_messages(members, cg)))
 
 
+def _on_time(d: Dose, now: float) -> bool:
+    """A tap now would be recorded on time."""
+    return d.is_open and (d.closes_ts is None or now <= d.closes_ts)
+
+
+def _late_ok(d: Dose, now: float) -> bool:
+    """A tap now would be recorded as late: after the window, inside the grace period, and nothing recorded yet."""
+    return (d.confirmed_ts is None and d.late_ts is None and not d.skipped and d.closes_ts is not None
+            and d.closes_ts < now <= d.closes_ts + adherence.LATE_TAP_GRACE_S)
+
+
+def _answerable(d: Dose, now: float) -> bool:
+    return _on_time(d, now) or _late_ok(d, now)
+
+
+def _prompted(d: Dose) -> bool:
+    """Pam has actually asked about this dose. A spoken "yes" is only taken as an answer to a question she asked."""
+    return d.announced or d.asked or d.nudges > 0 or d.escalated or d.handoff_asked
+
+
+def _group_key(d: Dose):
+    return d.group if d.source == "schedule" and d.group is not None else d.id
+
+
+def _handoff_group(doses: dict, now: float) -> list[Dose]:
+    """The dose the pills were fetched for: the newest one that can still be answered. Empty if there is none."""
+    live = [d for d in doses.values() if _answerable(d, now) and d.due_ts <= now]
+    if not live:
+        return []
+    key = _group_key(max(live, key=lambda d: (d.due_ts, str(d.id))))
+    return sorted((d for d in live if _group_key(d) == key), key=lambda d: (d.due_ts, d.name or ""))
+
+
+def _plan_handoff(doses: dict, now: float, t: Timing, cg: dict, out: list) -> None:
+    """Some time after the arm handed over the pills, ask once whether they were taken."""
+    spoke = {i for ev, msgs in out if msgs for i in (ev.get("doses") if isinstance(ev.get("doses"), list) else [ev.get("dose")])}
+    due: dict = {}
+    for d in doses.values():
+        if d.handoff_at is not None and not d.handoff_asked and d.id not in spoke and _answerable(d, now) \
+                and now - d.handoff_at >= t.handoff_ask_s:
+            due.setdefault(_group_key(d), []).append(d)
+    for members in sorted(due.values(), key=lambda g: min(m.due_ts for m in g)):
+        if now - max(m.last_spoken for m in members) < t.min_gap_s:
+            continue                       # something was just said about this dose; ask on a later tick
+        members.sort(key=lambda d: (d.due_ts, d.name or ""))
+        for m in members:
+            m.handoff_asked = True
+        key = "doses" if len(members) > 1 or members[0].source == "schedule" else "dose"
+        ids = [m.id for m in members]
+        out.append(({"type": "handoff_asked", key: ids if key == "doses" else ids[0]}, handoff_messages(members, cg)))
+
+
 def plan(doses: dict, reminders: list[dict], memories: list[dict], now: float, t: Timing, cg: dict | None = None,
          slots: list | None = None, meds: dict | None = None) -> list[tuple[dict, list[dict]]]:
     """(event to log, messages to push) pairs. Does not touch the log or the network."""
@@ -495,6 +581,8 @@ def plan(doses: dict, reminders: list[dict], memories: list[dict], now: float, t
             out.append(({"type": "escalated", "dose": d.id}, escalate_messages(d, cg)))
     if slots:
         _plan_scheduled(doses, slots, meds or {}, memories, now, t, cg, out)
+    if voice_confirm_enabled():
+        _plan_handoff(doses, now, t, cg, out)
     return out
 
 
@@ -508,7 +596,7 @@ _last_report = [float("-inf")]
 
 
 def schedule_health() -> dict:
-    """For the dashboard: the schedule's state, its version, and whether the scheduler has ticked lately.
+    """For Pam oversight: the schedule's state, its version, and whether the scheduler has ticked lately.
 
     state: "none" | "active" | "damaged" | "error" | "off". "damaged" matters: an unreadable schedule
     file must never look like "no reminders, all fine". `running` is False if nothing has ticked in 30 s
@@ -686,24 +774,23 @@ def _upcoming(now: float) -> list:
     return [(x.name, x.due.timestamp()) for x in slots if x.due.timestamp() > now]
 
 
-def _confirm_group(doses: dict, dose_id, group, answer: str, now: float, cg: dict) -> dict:
+def _confirm_group(doses: dict, dose_id, group, answer: str, now: float, cg: dict, via: str = "tap") -> dict:
     members = [d for d in doses.values() if d.source == "schedule" and (d.group == group if group is not None else d.id == dose_id)]
     if not members:
         return {"say": "I don't have a pill question waiting for an answer.", "ok": False}
     if answer == "not_yet":
-        append({"type": "not_yet", "doses": [d.id for d in members], "group": members[0].group}, now)
+        append({"type": "not_yet", "doses": [d.id for d in members], "group": members[0].group, "via": via}, now)
         return {"say": f"Okay. If you're not sure, please check with {cg['name']} before taking any.", "ok": True}
     if answer != "yes":
         return {"say": "I didn't understand that answer.", "ok": False}
-    on_time = [d for d in members if d.is_open and (d.closes_ts is None or now <= d.closes_ts)]
+    on_time = [d for d in members if _on_time(d, now)]
     # A tap after the window is still a tap: recorded, and it counts as taken for safety, but it neither adds to
     # the streak nor erases it. Only for a while: a tap days later would mostly be confusion.
-    late = [d for d in members if d.confirmed_ts is None and d.late_ts is None and not d.skipped and d.closes_ts is not None
-            and d.closes_ts < now <= d.closes_ts + adherence.LATE_TAP_GRACE_S]
+    late = [d for d in members if _late_ok(d, now)]
     if on_time:
-        append({"type": "confirmed", "doses": [d.id for d in on_time], "group": members[0].group}, now)
+        append({"type": "confirmed", "doses": [d.id for d in on_time], "group": members[0].group, "via": via}, now)
     if late:
-        append({"type": "confirmed_late", "doses": [d.id for d in late], "group": members[0].group}, now)
+        append({"type": "confirmed_late", "doses": [d.id for d in late], "group": members[0].group, "via": via}, now)
     done = [d for d in members if d.confirmed_ts or d.late_ts] + [d for d in on_time + late if not (d.confirmed_ts or d.late_ts)]
     if not done:            # every dose in the group is out of time, or was not prompted
         return {"say": f"That reminder has passed. Please check with {cg['name']} about your {_names(members)}.", "ok": False}
@@ -717,7 +804,7 @@ def _confirm_group(doses: dict, dose_id, group, answer: str, now: float, cg: dic
     return {"say": say, "ok": True, "recorded": True}
 
 
-def confirm(dose_id, answer: str, now: float | None = None, *, group: str | None = None) -> dict:
+def confirm(dose_id, answer: str, now: float | None = None, *, group: str | None = None, via: str = "tap") -> dict:
     """The tap. 'yes' records the dose (once); 'not_yet' records nothing but the question.
 
     A scheduled reminder is answered for its whole group at once (`group`)."""
@@ -729,17 +816,17 @@ def confirm(dose_id, answer: str, now: float | None = None, *, group: str | None
         return {"say": "I don't have a pill question waiting for an answer.", "ok": False}
     doses = replay(read_events())
     if group is not None or (dose_id in doses and doses[dose_id].source == "schedule"):
-        return _confirm_group(doses, dose_id, group, answer, now, cg)
+        return _confirm_group(doses, dose_id, group, answer, now, cg, via)
     d = doses.get(dose_id)
     if d is None:
         return {"say": "I don't have a pill question waiting for an answer.", "ok": False}
     if answer == "yes":
         if d.confirmed_ts is None:
-            append({"type": "confirmed", "dose": d.id}, now)
+            append({"type": "confirmed", "dose": d.id, "via": via}, now)
         at = clock(datetime.fromtimestamp(d.confirmed_ts or now), with_period=True)
         return {"say": f"Thank you. I've noted that you took your pills at {at}.", "ok": True, "recorded": True}
     if answer == "not_yet":
-        append({"type": "not_yet", "dose": d.id}, now)
+        append({"type": "not_yet", "dose": d.id, "via": via}, now)
         return {"say": f"Okay. If you're not sure, please check with {cg['name']} before taking any.", "ok": True}
     return {"say": "I didn't understand that answer.", "ok": False}
 
@@ -761,6 +848,77 @@ def simulate_evidence(now: float | None = None) -> dict:
             "logged_at": datetime.fromtimestamp(now).isoformat(timespec="seconds"),
             "confidence": 1.0, "frame": None, "simulated": True}, now)
     return {"say": "Simulated: the pill bottle was moved.", "ok": True}
+
+
+RECENT_QUESTION_S = 600     # a bare "yes" answers the question Pam asked in the last ten minutes
+
+
+def record_handoff(item: str = "", now: float | None = None) -> dict:
+    """The arm has handed over `item`. If that was the pills and a dose can still be answered, Pam asks about it
+    handoff_ask_s later (see _plan_handoff). Nothing is spoken now. If no dose is waiting the handoff is only logged:
+    a bottle fetched outside a dose time is not Pam's cue to ask a question that has no answer to record."""
+    if not voice_confirm_enabled():
+        return {"ok": False, "logged": False, "reason": "off"}
+    item = str(item or "")[:80]
+    if not is_pill_item(item):
+        return {"ok": True, "logged": False, "reason": "not_medication"}
+    now = time.time() if now is None else now
+    members = _handoff_group(replay(read_events()), now)
+    if not members:
+        append({"type": "handoff", "doses": [], "item": item, "reason": "no_open_dose"}, now)
+        return {"ok": True, "logged": True, "asks": [], "reason": "no_open_dose"}
+    if any(m.handoff_at is not None for m in members):
+        return {"ok": True, "logged": False, "reason": "already_recorded"}     # one question per dose, however often it is fetched
+    append({"type": "handoff", "doses": [m.id for m in members], "group": members[0].group, "item": item}, now)
+    return {"ok": True, "logged": True, "asks": [m.name or "pills" for m in members], "reason": "will_ask"}
+
+
+def _clarify(groups: list[list[Dose]], cg: dict) -> dict:
+    parts = [f"your {_names(g) if g[0].source == 'schedule' else 'pills'} at {_times([min(m.due_ts for m in g)])}" for g in groups]
+    say = f"Which one do you mean: {' or '.join(parts)}?"
+    return {"say": say, "ok": False, "ambiguous": True}
+
+
+def voice_confirm(answer: str, medication: str | None = None, now: float | None = None) -> dict:
+    """The patient SAID it, to Pam: the same as tapping "Yes, I took them" or "Not yet", recorded as via "voice".
+
+    Which dose is decided here, not by the voice model. Only doses Pam has asked about, and that can still be
+    answered, are candidates. One candidate: that one. Several: the medication they named, else the one Pam asked
+    about in the last ten minutes if that is only one, else Pam asks which. A wrong guess would record a dose
+    nobody took, so when unsure she asks."""
+    cg = caregiver()
+    if not enabled():
+        return _off(cg)
+    if not voice_confirm_enabled():
+        return {"say": f"I can't note that down right now. Please let {cg['name']} know.", "ok": False, "enabled": False}
+    if answer not in {"yes", "not_yet"}:
+        return {"say": "I didn't understand that answer.", "ok": False}
+    now = time.time() if now is None else now
+    everything = replay(read_events())
+    groups: dict = {}
+    for d in everything.values():
+        if _prompted(d) and _answerable(d, now):
+            groups.setdefault(_group_key(d), []).append(d)
+    cands = list(groups.values())
+    if medication:
+        want = str(medication).strip().casefold()
+        named = [g for g in cands if any(want and want in (m.name or "").casefold() for m in g)]
+        cands = named or (cands if want in {"pills", "medication", "medicine", "meds", "pill"} else [])
+    if not cands:
+        if answer == "yes":         # they may be saying it a second time: tell them what is already recorded, do not record again
+            have = status(everything, now, cg, upcoming=_upcoming(now))
+            if have["recorded"]:
+                return {"say": have["say"], "ok": True, "recorded": True, "already": True}
+        return {"say": f"I don't have a pill question waiting for an answer. If you're not sure, please check with {cg['name']}.", "ok": False}
+    if len(cands) > 1:
+        recent = [g for g in cands if now - max(m.last_spoken for m in g) <= RECENT_QUESTION_S]
+        if len(recent) != 1:
+            return _clarify(sorted(cands, key=lambda g: min(m.due_ts for m in g)), cg)
+        cands = recent
+    members = cands[0]
+    if members[0].source == "schedule":
+        return confirm(None, answer, now, group=members[0].group, via="voice")
+    return confirm(members[0].id, answer, now, via="voice")
 
 
 def adherence_summary(now: float | None = None) -> "adherence.Summary":
@@ -790,6 +948,16 @@ PROMPT_RULE = """
   Never say that they have, or have not, taken it. When they ask, call check_pills_taken and read its answer
   aloud in full, without softening it or adding to it. Never tell them to take, skip or double a dose; when in
   doubt, send them to their caregiver.
+"""
+
+VOICE_FUNCTION_DESCRIPTION = ("Record the user's spoken answer to whether they took their pills or medication. Call it only when "
+                              "they clearly say they took them (yes) or clearly say they have not (not_yet).")
+VOICE_RULE = """
+- Pill answers: when you have asked whether they took their pills, listen for a clear answer. Only when they
+  clearly say they took them, call confirm_pills with answer yes; only when they clearly say they have not, or
+  not yet, call it with not_yet. Never assume yes. If the reply is unclear ("okay", "hmm", "I think so", silence),
+  do not call it: ask once more, "Have you taken them, or not yet?", and if it is still unclear tell them to check
+  with their caregiver. A yes to any other question is not an answer about pills. Read the result aloud.
 """
 
 STREAK_FUNCTION_DESCRIPTION = ("Tell the user how they are doing with their medication: how many days in a row they have marked "

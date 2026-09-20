@@ -934,6 +934,7 @@ const handlers = {
   get_time_and_place: () => api(`/api/time-and-place`),
   check_pills_taken: () => api(`/api/pill-status`),
   check_streak: () => api(`/api/streak`),
+  confirm_pills: (a) => api(`/api/pill-answer`, { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(a) }),
   simulate_bottle_moved: () => api(`/api/dose/simulate-evidence`, { method: "POST" }),   // ?demo=1 only
   show_photo:    (a) => api(`/api/photo-info?name=${encodeURIComponent(a.name)}`),
   search_flights:(a) => api(`/api/flights?destination=${encodeURIComponent(a.destination)}&date=${encodeURIComponent(a.date || "")}`),
@@ -1254,7 +1255,7 @@ if (location.search.includes("demo")) {
     find_object:  { item: "pill bottle" }, get_schedule: {}, get_reminders: {},
     who_is_this:  {}, save_face: { name: "Test Person" },
     get_weather:  {}, get_time_and_place: {}, show_photo: { name: "Sarah" },
-    check_pills_taken: {}, check_streak: {}, simulate_bottle_moved: {},
+    check_pills_taken: {}, check_streak: {}, simulate_bottle_moved: {}, confirm_pills: { answer: "yes" },
     search_flights: { destination: "New York", date: "next Friday" },
     set_reminder: { text: "take your medication", in_minutes: 1 },
     request_ride: { destination: "airport" }, fetch_object: { item: "pill bottle" },

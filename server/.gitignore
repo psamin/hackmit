@@ -10,3 +10,6 @@ medications.jsonl
 
 # Hides the streak from the patient (server/doses.py); a local switch, never committed.
 .streak_off
+
+# Turns off spoken answers and the question after a handoff (server/doses.py); a local switch, never committed.
+.voice_confirm_off

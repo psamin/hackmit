@@ -30,8 +30,9 @@ from fastapi.responses import (FileResponse, JSONResponse, PlainTextResponse,
 from fastapi.staticfiles import StaticFiles
 
 import doses  # medication check; PAM_DOSE_CHECK=off disables it (see doses.py)
-import caregiver  # caregiver dashboard behind a shared PIN; off until CAREGIVER_PIN is set (see caregiver.py)
-import caregiver_schedule  # the dashboard's medication-schedule routes (all behind the PIN)
+import caregiver  # Pam oversight, the caregiver's page, behind a shared PIN; off until CAREGIVER_PIN is set (see caregiver.py)
+import caregiver_schedule  # Pam oversight's medication-schedule routes (all behind the PIN)
+import handoff  # notices the arm handing over the pills, so Pam can ask about them (see handoff.py)
 
 ROOT = Path(__file__).resolve().parents[1]
 HERE = ROOT / "server"
@@ -92,6 +93,7 @@ AGENT_ROUTES = {
     "/api/photo-info": "show_photo", "/api/ride": "request_ride",
     "/api/flights": "search_flights", "/api/fetch": "fetch_object",
     "/api/time-and-place": "get_time_and_place", "/api/pill-status": "check_pills_taken", "/api/streak": "check_streak",
+    "/api/pill-answer": "confirm_pills",
 }
 QUIET = {"/api/push", "/api/dg-token", "/api/agent-config", "/api/health"}
 
@@ -186,6 +188,8 @@ if doses.env_enabled():
     SYSTEM_PROMPT += doses.PROMPT_RULE
 if doses.env_enabled() and doses.streak_visible():   # PAM_STREAK=off keeps Pam from ever mentioning it
     SYSTEM_PROMPT += doses.STREAK_RULE
+if doses.env_enabled() and doses.voice_confirm_enabled():   # PAM_VOICE_CONFIRM=off: Pam is not told she can record answers
+    SYSTEM_PROMPT += doses.VOICE_RULE
 
 
 def fn(name, description, params=None, defer=False):
@@ -228,6 +232,12 @@ if doses.env_enabled():  # with PAM_DOSE_CHECK=off Pam is never told this functi
     FUNCTIONS.append(fn("check_pills_taken", doses.FUNCTION_DESCRIPTION))
 if doses.env_enabled() and doses.streak_visible():
     FUNCTIONS.append(fn("check_streak", doses.STREAK_FUNCTION_DESCRIPTION))
+if doses.env_enabled() and doses.voice_confirm_enabled():
+    FUNCTIONS.append(fn("confirm_pills", doses.VOICE_FUNCTION_DESCRIPTION,
+                        {"type": "object", "properties": {
+                            "answer": {"type": "string", "enum": ["yes", "not_yet"], "description": "yes: they clearly said they took them. not_yet: they clearly said they have not."},
+                            "medication": _str("only if they named a medication, e.g. 'Metformin'")},
+                         "required": ["answer"]}, defer=True))
 
 
 @app.get("/api/agent-config")
@@ -794,6 +804,19 @@ async def dose_confirm(body: dict):
     return doses.confirm(body.get("dose"), str(body.get("answer", "")), group=body.get("group"))
 
 
+@app.post("/api/pill-answer")
+async def pill_answer(body: dict):
+    """The patient's spoken yes / not yet, as Pam heard it. Recorded like a tap, marked via "voice"; see doses.voice_confirm."""
+    return doses.voice_confirm(str(body.get("answer", "")), body.get("medication") if isinstance(body.get("medication"), str) else None)
+
+
+@app.post("/api/handoff")
+async def pill_handoff(body: dict):
+    """The arm has handed over the pills (the arm watcher below calls the same thing). Pam asks whether they were
+    taken a little later; see doses.record_handoff. `item` defaults to the pill bottle, for the demo and the operator."""
+    return doses.record_handoff(str(body.get("item") or "pill bottle"))
+
+
 @app.post("/api/dose/simulate-evidence")
 async def dose_simulate_evidence():
     """Demo only (PAM_DOSE_DEMO=1): stands in for the camera seeing the bottle move."""
@@ -947,12 +970,33 @@ async def flights(destination: str, date: str = ""):
 # --------------------------------------------------------------------------
 # Arm: fetch goes to the VLA policy server (vla/arm_client.py), if it's up.
 # --------------------------------------------------------------------------
+_handoff_tasks: set = set()
+
+
+def _watch_handoff(item: str, status_fn) -> None:
+    """When the arm brings the pills, Pam asks about them afterwards. Looks only; never touches the arm."""
+    async def run():
+        outcome = await handoff.watch(item, status_fn, doses.record_handoff)
+        log("ARM", f"handoff watcher for {item!r}: {outcome}")
+    task = asyncio.get_running_loop().create_task(run())
+    _handoff_tasks.add(task)                    # a task nobody references can be collected mid-flight
+    task.add_done_callback(_handoff_tasks.discard)
+
+
 @app.post("/api/fetch")
 async def fetch_item(body: dict):
     try:
         sys.path.insert(0, str(ROOT))
         from vla.arm_client import fetch
-        status = await asyncio.to_thread(fetch, os.environ.get("ARM_URL") or "http://127.0.0.1:8020")
+        arm_url = os.environ.get("ARM_URL") or "http://127.0.0.1:8020"
+        status = await asyncio.to_thread(fetch, arm_url)
+        item = str(body.get("item") or "")
+        if status["active"] and doses.voice_confirm_enabled() and doses.is_pill_item(item):
+            try:
+                from vla.arm_client import arm
+                _watch_handoff(item, lambda: arm("status", arm_url))
+            except Exception as exc:  # noqa: BLE001 - not being able to watch must never make the fetch look like it failed
+                log("ARM", f"could not watch for the handoff: {type(exc).__name__}: {exc}")
         return {"say": "I'm getting it for you — the arm is on its way." if status["active"]
                 else f"I can't start the arm right now: {status.get('last_error', 'it says no')}"}
     except Exception:
