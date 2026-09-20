@@ -212,8 +212,11 @@ class Status(Base):
     def test_status_reports_switches_not_data(self):
         self.login()
         body = self.client.get(PROTECTED).json()
-        self.assertEqual(set(body), {"medication_check", "demo_timings", "elasticsearch"})
-        self.assertTrue(all(isinstance(v, bool) for v in body.values()))
+        self.assertEqual(set(body), {"medication_check", "demo_timings", "schedule_reminders", "schedule",
+                                     "schedule_version", "scheduler_running", "elasticsearch"})
+        for key in ("medication_check", "demo_timings", "schedule_reminders", "scheduler_running", "elasticsearch"):
+            self.assertIsInstance(body[key], bool, key)
+        self.assertIn(body["schedule"], {"none", "active", "damaged", "error", "off"})
 
 
 if __name__ == "__main__":
