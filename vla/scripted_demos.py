@@ -259,11 +259,12 @@ def record(args) -> None:
         EpisodeMonitorModule.blueprint(keyboard_map={"toggle": "enter", "discard": "d"}),
         TerminalKeys.blueprint(),
         ControlCoordinator.blueprint(hardware=[hardware], tasks=[
-            # A ceiling the task enforces itself, well above the speed we ask for: --speed only shapes the timing of
-            # a trajectory, so nothing else stops a bad pose or a bug being executed as fast as the motors allow.
-            # The gripper is left out, since it is slower than the arm and has its own current limit.
-            joint_trajectory_task(OPENYAM_JOINTS,
-                                  velocity_limits={n: args.speed * 2 for n in OPENYAM_JOINTS[:-1]}),
+            # A ceiling the task enforces itself, tighter than its 1.0 rad/s default and well above the speed we
+            # ask for: --speed only shapes a trajectory's timing, so nothing else stops a bad pose or a bug in this
+            # script being executed as fast as the motors allow. Every configured joint has to be named, and the
+            # gripper keeps the default, since it travels its whole range in GRIPPER_S and must not be throttled.
+            joint_trajectory_task(OPENYAM_JOINTS, velocity_limits={
+                **{n: args.speed * 2 for n in OPENYAM_JOINTS[:-1]}, OPENYAM_JOINTS[-1]: 1.0}),
             TaskConfig(name=f"{OPENYAM_HARDWARE_ID}_gripper", type="gripper", joint_names=[OPENYAM_GRIPPER_JOINT],
                        priority=20),
         ]),
