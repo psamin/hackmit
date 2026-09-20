@@ -31,6 +31,7 @@ from fastapi.staticfiles import StaticFiles
 
 import doses  # medication check; PAM_DOSE_CHECK=off disables it (see doses.py)
 import caregiver  # caregiver dashboard behind a shared PIN; off until CAREGIVER_PIN is set (see caregiver.py)
+import caregiver_schedule  # the dashboard's medication-schedule routes (all behind the PIN)
 
 ROOT = Path(__file__).resolve().parents[1]
 HERE = ROOT / "server"
@@ -71,6 +72,7 @@ import google_calendar
 google_calendar.install_log_filter()
 app = FastAPI(title="Pam")
 app.include_router(caregiver.router)
+app.include_router(caregiver_schedule.router)
 
 
 # --------------------------------------------------------------------------

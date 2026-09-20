@@ -42,6 +42,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.routing import APIRoute
 
 HERE = Path(__file__).resolve().parent
 PAGE = HERE / "caregiver.html"
@@ -52,7 +53,20 @@ MAX_FAILURES = 5
 LOCKOUT_WINDOW_S = 300
 COOKIE = "pam_caregiver"
 
-router = APIRouter()
+class NoStoreRoute(APIRoute):
+    """Health data must not linger in a browser cache: after sign-out, Back should not show it."""
+
+    def get_route_handler(self):
+        original = super().get_route_handler()
+
+        async def handler(request: Request):
+            response = await original(request)
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        return handler
+
+
+router = APIRouter(route_class=NoStoreRoute)
 _sessions: dict[str, float] = {}   # token -> expiry
 _failures: list[float] = []        # times of recent wrong PINs
 _now = time.time                   # a seam, so tests can move the clock
