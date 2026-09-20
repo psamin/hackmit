@@ -35,17 +35,24 @@ def hand_area(landmarks) -> float:
 
 
 def wait_for_hand_remote(poll_url: str, timeout_s: float = 30.0, nag_s: float = 7.0,
-                         on_nag: Callable[[int], None] | None = None) -> bool:
+                         on_nag: Callable[[int], None] | None = None,
+                         area_min: float = HAND_AREA_MIN) -> bool:
     """Ask another service whether a hand is in front of its camera, rather than opening one here.
 
     The phone is the camera pointed at the catch - the arm's looks outward from the hand-over pose. The server
     already keeps the newest phone frame for the face tools, so this just polls its answer.
+
+    `area_min` goes with the request: the server detects hands but does not decide which ones count, and
+    without it any hand anywhere in frame - the one holding the phone included - opens the gripper the moment
+    the hand-over starts.
     """
     import json
     import urllib.request
 
-    deadline, next_nag, nagged, streak, polls, seen_any = (
-        time.time() + timeout_s, time.time() + nag_s, 0, 0, 0, False)
+    sep = "&" if "?" in poll_url else "?"
+    poll_url = f"{poll_url}{sep}min_area={area_min}"
+    deadline, next_nag, nagged, streak, polls, seen_any, biggest = (
+        time.time() + timeout_s, time.time() + nag_s, 0, 0, 0, False, 0.0)
     while time.time() < deadline:
         if time.time() >= next_nag:
             if on_nag:
@@ -57,6 +64,7 @@ def wait_for_hand_remote(poll_url: str, timeout_s: float = 30.0, nag_s: float = 
                 answer = json.loads(response.read())
             polls += 1
             seen_any = seen_any or answer.get("frame_age_s") is not None
+            biggest = max(biggest, float(answer.get("area") or 0.0))
             streak = streak + 1 if answer.get("hand") else 0
             if streak >= CONSECUTIVE:
                 print(f"hand seen by the phone camera (area {answer.get('area')}) - releasing", flush=True)
@@ -65,7 +73,8 @@ def wait_for_hand_remote(poll_url: str, timeout_s: float = 30.0, nag_s: float = 
             print(f"hand poll failed ({exc})", flush=True)
         time.sleep(POLL_S)
     why = "no hand seen" if seen_any else "the phone camera sent nothing (is its page open?)"
-    print(f"{why} in {timeout_s:.0f}s ({polls} polls) - releasing anyway", flush=True)
+    near = f", biggest hand {biggest:.4f} vs threshold {area_min}" if biggest else ""
+    print(f"{why} in {timeout_s:.0f}s ({polls} polls{near}) - releasing anyway", flush=True)
     return False
 
 

@@ -54,12 +54,18 @@ now run the arm, in its own terminal, with a hand near the 24 V switch:
 
   source ~/Documents/GitHub/dimos/.venv/bin/activate && cd $(pwd)
   PYTHONPATH=. python vla/run_policy.py --real --camera-index 0 \\
-    --home vla/spots/left_01.json --handover vla/spots/handover.json --present-s 2 \\
+    --home vla/spots/left_01.json --handover vla/spots/handover.json \\
+    --grasp-s 12 --present-s 0.5 --catch-s 1 \\
     --voice-url http://127.0.0.1:8000/api/push \\
-    --announce "I have your pills. Please hold out your hand." \\
-    --wait-for-hand --catch-s 30 --nag-s 3 \\
-    --nag "Please take your pills." --nag "Take your time, I have got it." \\
+    --announce "Here are your pills." \\
     --return-after-s 3 --return-speed 0.15 --server http://127.0.0.1:8011
 
 type 'go', then 'p'. Leave it there - saying "I forgot where I put my pills" to Pam drives the rest.
+
+Everything after the grasp is scripted: the policy gets --grasp-s to reach the bottle, then the arm shuts
+its jaws, turns round, says the line, waits --catch-s and drops. Keep your hand underneath.
+
+  'h' hand over now, without waiting out the grasp window
+  'r' reset to home            (or: curl -X POST http://127.0.0.1:8020/home)
+  'x' stop the policy
 EOF

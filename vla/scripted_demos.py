@@ -201,7 +201,11 @@ def build_trajectory(joint_names, start, poses, speed, noise, rng):
         if holds:  # bound the noise, but never move the taught pose itself
             lo, hi = np.minimum(LIMITS[:, 0], target), np.maximum(LIMITS[:, 1], target)
             target = np.clip(target + rng.uniform(-noise, noise, target.shape), lo, hi)
-        t += max(float(np.abs(target - arm).max()) / speed, 0.5)
+        travel = float(np.abs(target - arm).max())
+        # The 0.5s floor stops a tiny move being commanded absurdly fast. A segment that does not move the arm
+        # at all is a different thing - it used to buy half a second of the arm sitting there before the gripper
+        # even started, which reads as a stall.
+        t += max(travel / speed, 0.5) if travel > 1e-6 else 0.0
         arm = target
         points.append(TrajectoryPoint(positions=[*arm, gripper], velocities=zeros, time_from_start=t))
         if not holds:  # close/open in place, then settle before moving on
@@ -210,6 +214,70 @@ def build_trajectory(joint_names, start, poses, speed, noise, rng):
             t += GRIPPER_SETTLE_S
             points.append(TrajectoryPoint(positions=[*arm, gripper], velocities=zeros, time_from_start=t))
     return JointTrajectory(joint_names=list(joint_names), points=points), t
+
+
+def smooth_corners(trajectory, blend_s=0.4, dt=0.02):
+    """Resample a trajectory so joint velocity turns over gradually instead of stepping.
+
+    The executor interpolates position linearly between waypoints and ignores the velocity field entirely
+    (JointTrajectory.sample), so at a via point the commanded velocity jumps from one segment's to the next's in
+    a single tick. The arm cannot follow a step: it lags, then catches up, which reads as a pause at the corner.
+
+    Around each via point this replaces the two straight legs with a quadratic Bezier whose control point is the
+    via pose itself. Its end velocities equal the two legs' velocities exactly, so the command is smooth through
+    the corner, and a Bezier stays inside the triangle of its three control points - it can never swing wider
+    than the taught poses already do. Where the arm is still on one side (the gripper closing) the same curve
+    eases it out of rest rather than starting at full speed.
+    """
+    from dimos.msgs.trajectory_msgs.JointTrajectory import JointTrajectory
+    from dimos.msgs.trajectory_msgs.TrajectoryPoint import TrajectoryPoint
+
+    points = trajectory.points
+    if len(points) < 3 or blend_s <= 0:
+        return trajectory
+    times = np.array([p.time_from_start for p in points], float)
+    q = np.array([p.positions for p in points], float)
+    width = q.shape[1]
+
+    def line(i, t):
+        """Where leg i -> i+1 puts the joints at time t."""
+        span = times[i + 1] - times[i]
+        return q[i] if span <= 0 else q[i] + (q[i + 1] - q[i]) * ((t - times[i]) / span)
+
+    corners = []
+    for i in range(1, len(points) - 1):
+        # Blend wherever the arm moves on either side: a corner between two legs, and equally the moment it
+        # leaves or comes back to rest. Skip only where it is stationary throughout, e.g. mid gripper close.
+        moving = max(np.abs(q[i] - q[i - 1])[:-1].max(), np.abs(q[i + 1] - q[i])[:-1].max()) > 1e-6
+        w = min(blend_s, (times[i] - times[i - 1]) / 2, (times[i + 1] - times[i]) / 2)
+        if moving and w > dt:
+            corners.append((i, w))
+    if not corners:
+        return trajectory
+
+    stamps = set(float(t) for t in times)
+    for i, w in corners:
+        stamps.update(float(t) for t in np.arange(times[i] - w, times[i] + w + dt / 2, dt))
+    stamps = sorted(t for t in stamps if times[0] <= t <= times[-1])
+
+    out = []
+    for t in stamps:
+        pos = None
+        for i, w in corners:
+            if times[i] - w <= t <= times[i] + w:
+                u = (t - (times[i] - w)) / (2 * w)
+                a, b, c = line(i - 1, times[i] - w), q[i], line(i, times[i] + w)
+                pos = (1 - u) ** 2 * a + 2 * u * (1 - u) * b + u ** 2 * c
+                break
+        if pos is None:
+            leg = int(np.clip(np.searchsorted(times, t, side="right") - 1, 0, len(points) - 2))
+            pos = line(leg, t)
+        # Belt and braces: the curve cannot leave the hull of the taught poses, but j4's taught pose sits a
+        # thousandth of a radian inside its URDF limit, so clamp rather than trust the arithmetic.
+        pos = np.append(np.clip(pos[:-1], LIMITS[:, 0], LIMITS[:, 1]), pos[-1])
+        out.append(TrajectoryPoint(positions=[float(x) for x in pos],
+                                   velocities=[0.0] * width, time_from_start=float(t)))
+    return JointTrajectory(joint_names=list(trajectory.joint_names), points=out)
 
 
 def record(args) -> None:
