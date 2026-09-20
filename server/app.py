@@ -367,13 +367,18 @@ async def find(q: str):
         return t[0].lower() + t[1:] if len(t) > 1 and t[1].islower() else t
     places = [(lower_first(m.get("location_description") or "somewhere nearby"),
                _ago(m.get("logged_at", ""))) for m in mems]
+    # "on the kitchen counter" (what the VLM saw) + "at home" (where the phone was).
+    # Two different resolutions of the same question; neither replaces the other.
+    from places import phrase as place_phrase
+    at = place_phrase({"place": mems[0].get("place"), "source": mems[0].get("place_source", "")})
+    at = f", {at}" if at else ""
     if len(places) == 1:
         where, when = places[0]
-        say = f"Your {name} is {where}." + (f" I saw it {when}." if when else "")
+        say = f"Your {name} is {where}{at}." + (f" I saw it {when}." if when else "")
     else:
         first, rest = places[0], places[1:]
         say = (f"I've seen your {name} in {len(places)} places. "
-               f"Most recently {first[0]}" + (f", {first[1]}" if first[1] else "") + ". "
+               f"Most recently {first[0]}{at}" + (f", {first[1]}" if first[1] else "") + ". "
                + " ".join(f"Also {w}" + (f", {t}" if t else "") + "." for w, t in rest))
 
     out = {"say": say,
@@ -392,10 +397,48 @@ async def find(q: str):
 async def es_index(mem: dict):
     """vlm.py dual-writes each memory here; ES indexes it. No-op without ES."""
     from es import index_memory
+    # Stamp it here rather than in the pipeline: the pipeline runs on a laptop with no
+    # GPS, and the phone is the thing that actually knows where it is.
+    if _last_fix.get("place") and "place" not in mem:
+        mem["place"] = _last_fix["place"]
+        mem["place_source"] = _last_fix["source"]
+        mem["lat"], mem["lon"] = _last_fix.get("lat"), _last_fix.get("lon")
     ok = index_memory(mem)
     log("DB", f"index {mem.get('object', '?')!r} \"{(mem.get('location_description') or '')[:60]}\" -> "
               + ("elasticsearch OK" if ok else "NOT INDEXED (ELASTICSEARCH_URL unset or ES down)"))
     return {"indexed": ok}
+
+
+# The phone's last known fix. One value, not a history: a memory is stamped with
+# where the phone was when it was written, and nothing else needs the trail.
+_last_fix: dict = {}
+
+
+@app.post("/api/location")
+async def set_location(body: dict):
+    """The phone reports its position. Accuracy matters as much as the coordinates --
+    a 500 m fix is worse than none, because it would confidently name the wrong
+    building, so places.resolve() refuses it rather than guessing."""
+    from places import resolve
+
+    try:
+        lat, lon = float(body["lat"]), float(body["lon"])
+    except (KeyError, TypeError, ValueError):
+        return JSONResponse({"error": "lat and lon required"}, 400)
+    acc = body.get("accuracy_m")
+    loc = resolve(lat, lon, float(acc) if acc is not None else None)
+    changed = loc.get("place") != _last_fix.get("place")
+    _last_fix.clear()
+    _last_fix.update(loc)
+    if changed:
+        log("PLACE", f"now {loc.get('place') or 'somewhere unrecognised'} "
+                     f"({loc['source']}, fix +/-{acc}m)")
+    return loc
+
+
+@app.get("/api/location")
+async def get_location():
+    return _last_fix or {"place": None, "source": "no_fix"}
 
 
 @app.post("/api/log")

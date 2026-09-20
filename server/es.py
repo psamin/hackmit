@@ -29,6 +29,8 @@ def client():
                 "landmarks": {"type": "text"}, "location_description": {"type": "text"},
                 "confidence": {"type": "float"}, "logged_at": {"type": "date"},
                 "video_t": {"type": "float"}, "event_id": {"type": "integer"},
+                "place": {"type": "keyword"}, "place_source": {"type": "keyword"},
+                "lat": {"type": "float"}, "lon": {"type": "float"},
                 "after_frame": {"type": "keyword", "index": False}}})
     return _es
 
@@ -41,7 +43,8 @@ def index_memory(mem):
         return False
     try:
         doc = {k: mem.get(k) for k in ("object", "event", "surface", "landmarks",
-               "location_description", "confidence", "logged_at", "video_t", "event_id")}
+               "location_description", "confidence", "logged_at", "video_t", "event_id",
+               "place", "place_source", "lat", "lon")}
         doc["after_frame"] = (mem.get("frames") or [None])[-1]
         es.index(index=INDEX, document=doc)
         return True
