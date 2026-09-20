@@ -30,6 +30,7 @@ from fastapi.responses import (FileResponse, JSONResponse, PlainTextResponse,
 from fastapi.staticfiles import StaticFiles
 
 import doses  # medication check; PAM_DOSE_CHECK=off disables it (see doses.py)
+import caregiver  # caregiver dashboard behind a shared PIN; off until CAREGIVER_PIN is set (see caregiver.py)
 
 ROOT = Path(__file__).resolve().parents[1]
 HERE = ROOT / "server"
@@ -66,6 +67,7 @@ MEMORY_JSONL = Path(os.environ.get("MEMORY_JSONL", ROOT / "perception" / "runs" 
 REMINDERS = HERE / "reminders.jsonl"
 
 app = FastAPI(title="Pam")
+app.include_router(caregiver.router)
 
 
 # --------------------------------------------------------------------------
