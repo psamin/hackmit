@@ -16,7 +16,7 @@ Env (read from server/.env then perception/.env):
     AMADEUS_KEY/SECRET   flight search; falls back to a Google Flights link
     HOME_LAT/HOME_LON    weather + ride pickup (default: MIT campus)
 """
-import asyncio, hashlib, json, os, ssl, subprocess, sys, time
+import asyncio, codecs, hashlib, json, os, ssl, subprocess, sys, time
 from collections import deque
 from contextlib import suppress
 from datetime import datetime
@@ -34,12 +34,28 @@ HERE = ROOT / "server"
 PHONE = ROOT / "phone"
 CERT, KEY = PHONE / "cert.pem", PHONE / "key.pem"
 
+def _read_env(path):
+    """Decode .env whatever shell wrote it. read_text() would use the cp1252 locale
+    codec, and Windows shells do not write cp1252: PowerShell 5.1 redirection defaults
+    to UTF-16 LE, newer PowerShell to UTF-8 with a BOM. Either way the byte order mark
+    arrives glued to the first key name, that key silently never gets set, and the only
+    symptom is an auth failure much later with nothing pointing back at this file.
+    perception/vlm.py hit exactly this; sniff the BOM rather than guess."""
+    raw = path.read_bytes()
+    for bom, enc in ((codecs.BOM_UTF16_LE, "utf-16"), (codecs.BOM_UTF16_BE, "utf-16"),
+                     (codecs.BOM_UTF8, "utf-8-sig")):
+        if raw.startswith(bom):
+            return raw.decode(enc)
+    return raw.decode("utf-8", errors="replace")
+
+
 for env in (HERE / ".env", ROOT / "perception" / ".env"):
     if env.exists():
-        for line in env.read_text().splitlines():
+        for line in _read_env(env).splitlines():
             k, _, v = line.partition("=")
-            if k.strip() and not k.startswith("#"):
-                os.environ.setdefault(k.strip(), v.strip())
+            k = k.strip()
+            if k and not k.startswith("#"):
+                os.environ.setdefault(k, v.strip())
 
 HOME = {"lat": float(os.environ.get("HOME_LAT", "42.3601")),
         "lon": float(os.environ.get("HOME_LON", "-71.0942"))}
