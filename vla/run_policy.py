@@ -76,9 +76,25 @@ def watch_for_grasp(control, policy, args):
             return True
         return False
 
+    def say(text_or_command):
+        """Speak through the voice agent when --voice-url is set, otherwise run it as a shell command."""
+        import subprocess
+        import urllib.request
+
+        if not args.voice_url:
+            subprocess.run(text_or_command, shell=True, timeout=20, check=False)
+            return
+        body = _json.dumps({"type": "speak", "text": text_or_command}).encode()
+        request = urllib.request.Request(args.voice_url, data=body, method="POST",
+                                         headers={"Content-Type": "application/json"})
+        try:  # the agent not being up must never strand the arm holding a bottle
+            with urllib.request.urlopen(request, timeout=5) as response:
+                response.read()
+        except Exception as exc:
+            print(f"voice agent unreachable ({exc}), carrying on", flush=True)
+
     def run():
         """Lift and turn holding the bottle, present it, cue the person, wait for their hand, then open."""
-        import subprocess
 
         policy.stop_rollout()
         hold = [p for p in poses if not p["gripper"]]
@@ -89,17 +105,16 @@ def watch_for_grasp(control, policy, args):
         _time.sleep(args.present_s)
         if args.announce:  # the voice agent speaks while the arm holds still; the release waits for it to finish
             print(f"announcing: {args.announce}", flush=True)
-            try:
-                subprocess.run(args.announce, shell=True, timeout=20, check=False)
-            except subprocess.TimeoutExpired:
-                print("announcement timed out, carrying on", flush=True)
+            say(args.announce)
         if args.wait_for_hand:
             from vla.hand_release import wait_for_hand
 
-            prompts = args.nag or ['say "please take your pills"', 'say "take your time, I have got it"']
+            default_prompts = (["Please take your pills.", "Take your time, I have got it."] if args.voice_url
+                               else ['say "please take your pills"', 'say "take your time, I have got it"'])
+            prompts = args.nag or default_prompts
 
             def nag(n):
-                subprocess.run(prompts[n % len(prompts)], shell=True, timeout=20, check=False)
+                say(prompts[n % len(prompts)])
 
             wait_for_hand(camera_index=args.camera_index, timeout_s=args.catch_s, nag_s=args.nag_s, on_nag=nag)
         else:
@@ -176,6 +191,9 @@ def main() -> None:
                          "--catch-s becomes the timeout it releases on anyway.")
     ap.add_argument("--nag-s", type=float, default=3.0,
                     help="--wait-for-hand: seconds between spoken prompts while waiting for a hand")
+    ap.add_argument("--voice-url", default=None,
+                    help="the voice agent's push endpoint, e.g. http://127.0.0.1:8000/api/push. With it, "
+                         "--announce and --nag are spoken by the agent as plain text rather than run as commands.")
     ap.add_argument("--return-after-s", type=float, default=3.0,
                     help="--handover: seconds to wait after releasing before the arm goes back to home")
     ap.add_argument("--return-speed", type=float, default=0.15,
