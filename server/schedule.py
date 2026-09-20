@@ -534,7 +534,9 @@ def _windows_file_api():
     return kernel, security, SecurityAttributes, TokenUser
 
 
-def _private_append_fd(path: Path) -> int:
+def private_append_fd(path: Path) -> int:
+    """Open `path` for appending, readable only by the user running Pam. Also used by
+    setup.py for server/.env, which holds API keys."""
     if os.name != "nt":
         fd = os.open(path, os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o600)
         try:
@@ -660,7 +662,7 @@ class Store:
         If the file already ends mid-line (a torn write), start on a fresh line. Otherwise the new
         entry would be glued onto the fragment and both would be unreadable."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        fd = _private_append_fd(self.path)      # patient data: owner only
+        fd = private_append_fd(self.path)      # patient data: owner only
         try:
             size = os.fstat(fd).st_size
             if size:

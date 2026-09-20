@@ -714,9 +714,20 @@ Model weights are gitignored too and shared out of band.
   One-way/one-adult offers include airports, local dates/times, airline, stops and
   price in FLIGHT_CURRENCY; prices are indicative and Pam never books or pays.
   Keep api_key in the query string only; never log or return it.
-- Google Calendar signs in at startup: when credentials exist and nothing is linked,
-  app.main opens the laptop consent page once. It must never raise or block startup
-  when there is no browser, and must not reopen a page when already connected.
+- `server/setup.py` is the first-run page at `/setup`. app.main calls `setup.start()`
+  1.5 s after boot: it opens `/setup` when the Google client or flight key is missing,
+  the Google consent URL when the client exists but no account is linked, and nothing
+  once both are done. It must never raise or block startup when there is no browser.
+- Setup writes `server/.env` through `schedule.private_append_fd` on a temp file then
+  `replace()`, so the file stays owner-only and is never half-written. Other keys and
+  comments in `.env` survive; a key already present is replaced, not duplicated. Values
+  are also pushed into `os.environ` and `calendar_service.reset()` is called, so nothing
+  needs a restart. Secrets are never echoed, logged or returned; status is booleans only.
+  Flight keys are validated against SerpApi `/account` (free, no search spent) BEFORE
+  being written, and a provider outage returns 503 without discarding the key silently.
+- Reminders are Pam's own: set_reminder appends to server/reminders.jsonl, get_reminders
+  reads it, reminder_loop speaks due ones over SSE. There is no Google/Apple reminder
+  integration, and the calendar integration must never be required for reminders to work.
 - Uber handoff responses explain the limitation through speech and can
   retain optional helper cards. Do not equate prompt-level verbal approval with a
   server-enforced confirmation gate. Restart the voice session after prompt changes.

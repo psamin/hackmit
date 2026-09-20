@@ -29,25 +29,31 @@ console.deepgram.com, Member role. Optional: `ELASTICSEARCH_URL`, `SERPAPI_KEY`,
 `GOOGLE_CALENDAR_*`, `CAREGIVER_PIN`, `ARM_URL`, `HOME_LAT/LON`. `perception/.env` needs
 `ANTHROPIC_API_KEY` for the VLM.
 
-## Google Calendar sign-in
+## First run: http://127.0.0.1:8000/setup
 
-Calendar access is read-only. A Google Maps API key does not authorize Calendar.
+Start `server/app.py` and it opens this page by itself when anything is still missing. It
+collects the two credentials that must belong to your own accounts, writes them to the
+gitignored `server/.env` (owner-only), applies them to the running process, and sends the
+browser into Google's consent screen. No file editing and no restart.
 
-1. Enable the Google Calendar API in your Google Cloud project.
-2. Configure the Google consent screen and add your account as a test user if the app is in Testing mode.
-3. Create a **Web application** OAuth client with this exact authorized redirect URI:
-   `http://127.0.0.1:8000/api/calendar/google/callback`.
-4. Set `GOOGLE_CALENDAR_CLIENT_ID` and `GOOGLE_CALENDAR_CLIENT_SECRET` in the
-   gitignored `server/.env`. Never paste the secret or a private iCal URL into chat.
-5. Install `server/requirements.txt` in the project venv and start `server/app.py`.
+**Google Calendar** (read-only; a Google Maps key does *not* authorize Calendar):
+enable the Calendar API, add yourself as a test user on the consent screen, create a
+**Web application** OAuth client with redirect URI
+`http://127.0.0.1:8000/api/calendar/google/callback`, then paste the client ID and secret.
+Approve Google's page once; the stored refresh token keeps it connected across restarts, so
+later startups just print `Setup: Google Calendar connected`.
 
-**Sign in once at startup.** When the credentials exist and no account is linked yet, the
-server opens Google's consent page on the laptop by itself a moment after it starts.
-Approve it once; the stored refresh token keeps working across restarts, so later startups
-just print `Calendar: Google Calendar connected`. If the laptop has no browser, the startup
-line prints the URL instead, and Features → Check your calendar still has the same button.
-Pam starts normally either way, and every other capability works while the calendar is not
-connected.
+**Flight search**: paste a free SerpApi key. It is checked against the provider's `/account`
+endpoint before it is saved, so a typo fails on the page instead of mid-conversation.
+
+The setup routes, like the OAuth routes, answer only on the laptop's loopback address: a
+phone on the LAN gets 403. A saved secret is never rendered, returned or logged, and
+`/api/setup/status` answers with booleans only. Pam starts and runs normally while either
+service is unconnected; it says so out loud rather than inventing an answer.
+
+Reminders need none of this. `set_reminder` writes to Pam's own `server/reminders.jsonl`,
+`get_reminders` reads it back, and the scheduler speaks them through SSE. No Google, Apple
+or iPhone reminder account is involved at any point.
 
 Google expands recurring events; the query uses the calendar's own timezone and
 handles all-day events and pagination. Missing access and provider failures are
@@ -70,8 +76,9 @@ decommissioned on July 17, 2026** (its API hostnames no longer resolve), so the 
 `AMADEUS_*` integration could never have returned data again and has been removed.
 
 Pam now reads Google Flights results through **SerpApi's `google_flights` engine**:
-sign up at serpapi.com, no card, free plan 250 searches/month, and put the key in
-`SERPAPI_KEY`. `FLIGHT_CURRENCY` (default `USD`) sets the quoted currency. Without a
+sign up at serpapi.com, no card, free plan 250 searches/month, and paste the key into
+`/setup` (or set `SERPAPI_KEY` by hand). `FLIGHT_CURRENCY` (default `USD`) sets the
+quoted currency. Without a
 key, Pam says aloud that flight data is unavailable rather than inventing fares or
 handing off a search link. These are Google Flights' own indicative prices; the
 bookable fare is whatever the airline or agent charges at checkout.
