@@ -278,6 +278,44 @@ one-time download of the text encoder. Warm: **7.0 s for 6 prompts, 1.5 s for 2*
 Budget that as startup cost, and do not add prompts you do not need. A full pipeline
 run on this laptop measured `detect_track_ms` of 72-82 ms at imgsz 416.
 
+### Confidence sweep on a real scene (2026-09-19, Windows laptop)
+
+Swept with `perception/sweep_conf.py`: capture frames, predict once at the lowest
+threshold, filter upward so every threshold sees identical detections. COMBINED mode,
+imgsz 640, prompts `pill bottle, water bottle, keys, phone` + `person`.
+
+Scene: a busy hackathon hall - several people, laptops, chairs, tables, curtains.
+
+| conf | false positives (6 frames, no target objects present) | `person` |
+|---|---|---|
+| 0.05 | **0/6** | 6/6 |
+| 0.10 | **0/6** | 6/6 |
+| 0.15 | **0/6** | 6/6 |
+| 0.20 | **0/6** | 6/6 |
+| 0.30 | **0/6** | 6/6 |
+| 0.40 | **0/6** | 6/6 |
+
+Same on `yoloe-26s-seg.pt` and `yoloe-11s-seg.pt`. **Zero false positives all the way down
+to 0.05** on a cluttered scene full of people and furniture. The earlier "it detects
+everything" impression was `person` firing 6/6 - correct behaviour, and it can never fire
+an event, since `person` is not in `--targets`.
+
+So on this evidence there is no false-positive reason to keep `--conf` high, and the
+asymmetry (a missed bottle is silent and fatal, a false positive costs ~$0.005 and the VLM
+relabels it) argues for going low. **Start at 0.15.**
+
+**Recall is still unmeasured.** Two capture attempts produced no pill bottle in frame at
+all - it was on the desk, below a laptop webcam angled up at the user's face. That is the
+single most important number still missing, and it cannot be obtained without the physical
+bottle in the camera's field of view. Nothing about the threshold can be concluded until
+it is.
+
+**Aim the camera at the surface, not the face.** A laptop webcam sees the user; a pill
+bottle on the desk is out of frame entirely, and every "it isn't detecting it" symptom
+follows from that rather than from any threshold. On the wheelchair the camera must point
+down and forward at the lap/table - which also makes the `person` box an arm reaching in
+rather than a torso, the geometry the contact rule needs.
+
 ### Frame rate is a detection-resolution trade, not a VLM cost
 
 The VLM never saw 10 fps. It gets 1 or 3 stills per *event*, so lowering `--fps`
