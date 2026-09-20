@@ -726,6 +726,46 @@ def confirm(dose_id, answer: str, now: float | None = None, *, group: str | None
     return {"say": "I didn't understand that answer.", "ok": False}
 
 
+def confirm_by_robot(now: float | None = None, what: str = "pills") -> dict:
+    """The arm handed the medication over: record the dose as taken.
+
+    This is a PRODUCT DECISION that overrides the principle at the top of this file.
+    Everywhere else, the camera only ever produces `evidence` and a person's tap is the
+    only thing that records a dose -- because a bottle moving is not a pill being
+    swallowed. A robot hand-over is the same class of signal: it proves the bottle
+    travelled, not that anything was taken. It is recorded as `confirmed` anyway,
+    because the arm delivering the medication is the moment this product treats as the
+    dose being taken.
+
+    What that costs: if the arm fetches the bottle and the person does not take one,
+    Pam will say they did. The event is written with by="robot" so the log can always
+    tell an arm hand-over apart from a human tap, which is the difference an audit or a
+    caregiver would care about.
+
+    Confirms every dose open today. If none is open -- nothing was scheduled, or it was
+    already answered -- one is opened and immediately confirmed, so "did I take my
+    pills?" answers yes rather than falling back to "no, not yet".
+    """
+    cg = caregiver()
+    if not enabled():
+        return _off(cg)
+    now = time.time() if now is None else now
+    doses = replay(read_events())
+    open_today = [d for d in doses.values() if _same_day(d.due_ts, now) and d.is_open]
+    if open_today:
+        for d in open_today:
+            append({"type": "confirmed", "dose": d.id, "by": "robot"}, now)
+        names = _list([d.name or "pills" for d in open_today])
+    else:
+        did = f"robot-{int(now)}"
+        append({"type": "due", "dose": did, "text": what, "due_ts": now, "source": "robot"}, now)
+        append({"type": "confirmed", "dose": did, "by": "robot"}, now)
+        names = what
+    at = clock(datetime.fromtimestamp(now), with_period=True)
+    return {"ok": True, "recorded": True, "doses": len(open_today) or 1,
+            "say": f"I've noted that you took your {names} at {at}."}
+
+
 def simulate_evidence(now: float | None = None) -> dict:
     """DEMO ONLY (PAM_DOSE_DEMO=1): stand in for the camera seeing the bottle move.
     Recorded as simulated, so the log never passes it off as an observation."""

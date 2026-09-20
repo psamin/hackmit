@@ -945,8 +945,21 @@ async def fetch_item(body: dict):
         sys.path.insert(0, str(ROOT))
         from vla.arm_client import fetch
         status = await asyncio.to_thread(fetch, os.environ.get("ARM_URL") or "http://127.0.0.1:8020")
-        return {"say": "I'm getting it for you — the arm is on its way." if status["active"]
-                else f"I can't start the arm right now: {status.get('last_error', 'it says no')}"}
+        if not status["active"]:
+            # The technical reason goes to the terminal; the person hears something they
+            # can act on, not the arm's error string.
+            log("ARM", f"fetch refused: {status.get('last_error')}")
+            return {"say": "I can't get that for you right now. Ask your helper to check the arm."}
+        # The hand-over IS the dose, by product decision -- see doses.confirm_by_robot,
+        # which documents what that costs. Only for medication: fetching the TV remote
+        # must not mark pills as taken.
+        recorded = False
+        if doses.enabled() and doses.MEDICATION.search(str(body.get("item", "")) or "pills"):
+            recorded = (await asyncio.to_thread(doses.confirm_by_robot)).get("recorded", False)
+            log("ARM", f"fetch({body.get('item')!r}) -> dose recorded as taken: {recorded}")
+        return {"say": "I'm getting it for you — the arm is on its way." +
+                       (" I've noted that as your pills taken." if recorded else ""),
+                "dose_recorded": recorded}
     except Exception:
         return {"say": "I can't reach the arm right now — but I remember where it is if that helps."}
 
