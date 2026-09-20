@@ -19,7 +19,9 @@ def client():
         return None
     if _es is None:
         from elasticsearch import Elasticsearch
-        _es = Elasticsearch(url, request_timeout=5)
+        api_key = os.environ.get("ELASTICSEARCH_API_KEY")
+        _es = Elasticsearch(url, api_key=api_key, request_timeout=5) if api_key \
+              else Elasticsearch(url, request_timeout=5)
         if not _es.indices.exists(index=INDEX):
             _es.indices.create(index=INDEX, mappings={"properties": {
                 "object": {"type": "text", "fields": {"kw": {"type": "keyword"}}},

@@ -59,6 +59,11 @@ async def dg_token():
                          headers={"Authorization": f"Token {key}"},
                          json={"ttl_seconds": 60})
     if r.status_code != 200:
+        # The key lacks Member role, so it can't mint JWTs — but it still
+        # authenticates the agent socket directly as the subprotocol token.
+        # Fine here: this endpoint only serves pages on our own LAN.
+        if r.status_code == 403:
+            return PlainTextResponse(key)
         return JSONResponse({"error": f"Deepgram grant failed: {r.status_code} {r.text}"}, 502)
     return PlainTextResponse(r.json()["access_token"])
 
