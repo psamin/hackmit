@@ -120,63 +120,67 @@ class CapabilityTests(unittest.TestCase):
         self.assertNotRegex(result["say"].lower(), r"\b(screen|tap|click|link)\b")
         self.assertNotIn("card", result)
 
-    def flight_fixture(self, mode="production", provider_status=200, empty=False):
+    def flight_fixture(self, provider_status=200, empty=False, payload=None, destination="New York"):
         travel_date = (datetime.now() + timedelta(days=7)).date().isoformat()
-        payload = {"dictionaries": {"carriers": {"AA": "Example Air"}}, "data": [] if empty else [
-            {"id": "test-offer", "price": {"total": "125.40", "currency": "EUR"}, "itineraries": [{"segments": [
-                {"carrierCode": "AA", "departure": {"iataCode": "BOS", "at": travel_date + "T08:30:00"},
-                 "arrival": {"iataCode": "JFK", "at": travel_date + "T10:00:00"}, "numberOfStops": 0}]}]}]}
+        payload = payload if payload is not None else {"best_flights": [] if empty else [{
+            "flights": [{"departure_airport": {"id": "BOS", "time": travel_date + " 08:30"},
+                         "arrival_airport": {"id": "JFK", "time": travel_date + " 10:00"},
+                         "airline": "Example Air", "flight_number": "XA 100"}],
+            "layovers": [], "price": 125, "type": "One way"}], "other_flights": []}
         requests = []
         def respond(request):
             requests.append(request)
-            if request.url.path.endswith("/token"):
-                return httpx.Response(200, json={"access_token": "fixture-access"})
-            return httpx.Response(provider_status, json=payload if provider_status == 200 else {"error": "fixture-secret"})
+            return httpx.Response(provider_status, json=payload if provider_status == 200 else {"error": "fixture-secret rejected"})
         original = httpx.AsyncClient
-        with patch.dict(os.environ, {"AMADEUS_KEY": "fixture-client", "AMADEUS_SECRET": "fixture-secret", "AMADEUS_ENV": mode}), \
+        with patch.dict(os.environ, {"SERPAPI_KEY": "fixture-secret"}), \
              patch.object(app.httpx, "AsyncClient", side_effect=lambda **kw: original(transport=httpx.MockTransport(respond), **kw)):
-            output = self.client.get("/api/flights", params={"destination": "New York", "date": travel_date}).json()
+            output = self.client.get("/api/flights", params={"destination": destination, "date": travel_date}).json()
         return output, requests
 
     def test_flight_options_are_complete_spoken_answers(self):
         result, requests = self.flight_fixture()
         self.assertEqual(result["status"], "ok")
         self.assertEqual(len(result["offers"]), 1)
-        for value in ("Example Air", "8:30 AM", "10:00 AM", "125.40", "euros", "nonstop", "BOS", "JFK"):
+        for value in ("Example Air", "8:30 AM", "10:00 AM", "125", "US dollars", "nonstop", "BOS", "JFK"):
             self.assertIn(value, result["say"])
         self.assertNotRegex(result["say"].lower(), r"\b(screen|tap|click|link)\b")
         self.assertNotIn("card", result)
-        self.assertEqual([r.method for r in requests], ["POST", "GET"])
-        self.assertEqual(requests[-1].url.host, "api.amadeus.com")
+        self.assertEqual(requests[-1].url.host, "serpapi.com")
+        query = requests[-1].url.params
+        self.assertEqual(query["engine"], "google_flights")
+        self.assertEqual((query["departure_id"], query["arrival_id"], query["type"], query["adults"]), ("BOS", "JFK", "2", "1"))
 
     def test_spoken_connections_keep_the_returned_currency(self):
-        result = app.spoken_flight_offer({"price": {"total": "280.00", "currency": "CAD"}, "itineraries": [{"segments": [
-            {"carrierCode": "AA", "departure": {"iataCode": "BOS", "at": "2027-05-08T08:00:00"}, "arrival": {"iataCode": "ORD", "at": "2027-05-08T09:00:00"}},
-            {"carrierCode": "BB", "departure": {"iataCode": "ORD", "at": "2027-05-08T10:00:00"}, "arrival": {"iataCode": "SFO", "at": "2027-05-08T13:00:00"}}]}]},
-            {"AA": "Example Air", "BB": "Sample Air"})
+        result = app.spoken_flight_offer({"price": 280, "flights": [
+            {"departure_airport": {"id": "BOS", "time": "2027-05-08 08:00"}, "arrival_airport": {"id": "ORD", "time": "2027-05-08 09:00"}, "airline": "Example Air"},
+            {"departure_airport": {"id": "ORD", "time": "2027-05-08 10:00"}, "arrival_airport": {"id": "SFO", "time": "2027-05-08 13:00"}, "airline": "Sample Air"}]}, "CAD")
         self.assertEqual(result["stops"], 1)
         self.assertEqual(result["currency"], "CAD")
         self.assertIn("Example Air and Sample Air", result["summary"])
         self.assertIn("Canadian dollars", result["summary"])
         self.assertIn("1 stop", result["summary"])
 
-    def test_sandbox_flight_prices_are_labelled_as_test_data(self):
-        result, requests = self.flight_fixture(mode="test")
-        self.assertTrue(result["is_demo"])
-        self.assertIn("not live", result["say"])
-        self.assertEqual(requests[-1].url.host, "test.api.amadeus.com")
-
     def test_flight_provider_error_is_not_no_results(self):
-        result, _ = self.flight_fixture(provider_status=503)
+        result, _ = self.flight_fixture(provider_status=401)
         self.assertEqual(result["status"], "unavailable")
         self.assertNotIn("fixture-secret", json.dumps(result))
         self.assertNotRegex(result["say"].lower(), r"\b(screen|tap|click|link)\b")
+        result, _ = self.flight_fixture(payload={"error": "Google Flights hasn't returned any results"})
+        self.assertEqual(result["status"], "no_offers")
         result, _ = self.flight_fixture(empty=True)
         self.assertEqual(result["status"], "no_offers")
         self.assertEqual(result["offers"], [])
 
+    def test_flight_search_key_is_never_exposed(self):
+        result, requests = self.flight_fixture()
+        self.assertEqual(requests[-1].url.params["api_key"], "fixture-secret")
+        self.assertNotIn("fixture-secret", json.dumps(result))
+        with self.assertLogs() if False else patch.object(app, "log") as logged:
+            self.client.get("/api/flights", params={"destination": "New York", "date": "next Friday"})
+        self.assertNotIn("api_key", json.dumps([str(call) for call in logged.call_args_list]))
+
     def test_flight_date_is_requested_instead_of_guessed(self):
-        with patch.dict(os.environ, {"AMADEUS_KEY": "fixture-client", "AMADEUS_SECRET": "fixture-secret"}), \
+        with patch.dict(os.environ, {"SERPAPI_KEY": "fixture-secret"}), \
              patch.object(app.httpx, "AsyncClient", side_effect=AssertionError("Must ask for a date first")):
             result = self.client.get("/api/flights", params={"destination": "New York"}).json()
         self.assertEqual(result["status"], "needs_date")
@@ -366,6 +370,31 @@ class GoogleCalendarTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("fixture-code", response.text)
         with TestClient(app.app, base_url="http://127.0.0.1:8000", client=("10.0.0.4", 55555)) as client:
             self.assertEqual(client.get(gc.CONNECT_PATH).status_code, 403)
+
+    async def test_startup_opens_consent_once_then_stays_connected(self):
+        opened, messages = [], []
+        self.assertTrue(gc.start_setup(opened.append, messages.append))
+        self.assertEqual(opened, ["http://127.0.0.1:8000" + gc.CONNECT_PATH])
+        self.assertTrue(any("browser" in message.lower() for message in messages))
+        self.service.save(self.credentials())
+        opened.clear()
+        self.assertFalse(gc.start_setup(opened.append, messages.append))
+        self.assertEqual(opened, [])
+        self.assertTrue(any("connected" in message.lower() for message in messages))
+
+    async def test_startup_without_credentials_explains_setup_and_opens_nothing(self):
+        opened, messages = [], []
+        with patch.dict(os.environ, {"GOOGLE_CALENDAR_CLIENT_ID": "", "GOOGLE_CALENDAR_CLIENT_SECRET": ""}):
+            self.assertFalse(gc.start_setup(opened.append, messages.append))
+        self.assertEqual(opened, [])
+        self.assertTrue(any(gc.REDIRECT_URI in message for message in messages))
+
+    async def test_startup_never_blocks_pam_when_the_browser_fails(self):
+        def refuse(url):
+            raise OSError("no browser")
+        messages = []
+        self.assertFalse(gc.start_setup(refuse, messages.append))
+        self.assertTrue(any(gc.CONNECT_PATH in message for message in messages))
 
     async def test_callback_codes_are_redacted_from_access_logs(self):
         record = logging.LogRecord("uvicorn.access", logging.INFO, "", 1, "%s %s %s %s %s",

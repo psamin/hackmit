@@ -706,11 +706,17 @@ Model weights are gitignored too and shared out of band.
   offer details in `say`, because only `say` reaches the voice model. Do not put
   essential information solely in a card or tell the user to look at a screen.
   Flights no longer fall back to a Google Flights link when credentials are absent.
-- Flight searches use AMADEUS_ENV=test by default and label cached test offers as
-  non-live examples. Production credentials plus AMADEUS_ENV=production are needed
-  for real-time quotes. Never silently switch to production or buy tickets.
-  One-way/one-adult offers include airports, local dates/times, airline, stops,
-  total price and its actual currency; the voice agent presents one at a time.
+- Flights come from SerpApi's google_flights engine (SERPAPI_KEY, free 250/month).
+  Google itself publishes NO flights API: QPX Express died in 2018 and only the
+  carbon Travel Impact Model remains. Amadeus self-service was decommissioned on
+  2026-07-17 and its hostnames no longer resolve, so that integration was deleted
+  rather than kept as a fallback. Verified against provider docs, 2026-09-21.
+  One-way/one-adult offers include airports, local dates/times, airline, stops and
+  price in FLIGHT_CURRENCY; prices are indicative and Pam never books or pays.
+  Keep api_key in the query string only; never log or return it.
+- Google Calendar signs in at startup: when credentials exist and nothing is linked,
+  app.main opens the laptop consent page once. It must never raise or block startup
+  when there is no browser, and must not reopen a page when already connected.
 - Uber handoff responses explain the limitation through speech and can
   retain optional helper cards. Do not equate prompt-level verbal approval with a
   server-enforced confirmation gate. Restart the voice session after prompt changes.
