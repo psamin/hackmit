@@ -470,6 +470,7 @@ const CAPABILITIES = [
   ["get_schedule", "Check your calendar", "Read today's events from your connected calendar.", "What do I have planned today?"],
   ["get_reminders", "Read your reminders", "Hear the reminders you've already saved.", "What are my reminders?"],
   ["set_reminder", "Set a reminder", "Save a reminder. Spoken alerts need Pam to stay open and connected.", "Remind me to call Sarah in ten minutes."],
+  ["get_time_and_place", "Know the day and where you are", "Hear today's date, the time, where you are, and what is next.", "What day is it? Where am I?"],
   ["get_weather", "Check the weather", "Get the current weather for your saved home location.", "What's the weather like?"],
   ["call_contact", "Call someone", "Prepare a call to a saved contact using your phone or a connected calling service.", "Help me call Sarah."],
   ["call_caregiver", "Reach your caregiver", "Get help contacting the caregiver saved in Pam.", "I'd like to call my caregiver."],
@@ -1115,6 +1116,7 @@ const handlers = {
   get_schedule:  () => api(`/api/calendar`),
   get_reminders: () => api(`/api/reminders`),
   get_weather:   () => api(`/api/weather`),
+  get_time_and_place: () => api(`/api/time-and-place`),
   show_photo:    (a) => api(`/api/photo-info?name=${encodeURIComponent(a.name)}`),
   search_flights:(a) => api(`/api/flights?destination=${encodeURIComponent(a.destination)}&date=${encodeURIComponent(a.date || "")}`),
   set_reminder:  (a) => api(`/api/reminders`, { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(a) }),
@@ -1295,7 +1297,7 @@ if (location.search.includes("demo")) {
   els.demo.className = "show";
   const tests = {
     find_object:  { item: "pill bottle" }, get_schedule: {}, get_reminders: {},
-    get_weather:  {}, show_photo: { name: "Sarah" },
+    get_weather:  {}, get_time_and_place: {}, show_photo: { name: "Sarah" },
     search_flights: { destination: "New York", date: "next Friday" },
     set_reminder: { text: "take your medication", in_minutes: 1 },
     send_message: { to: "Sarah", message: "thinking of you" },
