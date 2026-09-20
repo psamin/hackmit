@@ -278,6 +278,30 @@ one-time download of the text encoder. Warm: **7.0 s for 6 prompts, 1.5 s for 2*
 Budget that as startup cost, and do not add prompts you do not need. A full pipeline
 run on this laptop measured `detect_track_ms` of 72-82 ms at imgsz 416.
 
+### Bystanders: keep the `person` prompt, gate what counts as the arm
+
+`person` must stay in `--targets`' vocabulary. It is a decoy exactly like `water bottle`:
+it absorbs people so they are not labelled as a real target. Delete it and an arm starts
+scoring as a pill bottle, because YOLOE cannot answer "none of these".
+
+What was wrong was that *any* person box touching the near edge counted as the user's own
+arm. In a crowded room that includes anyone walking past, and an object they pass in
+front of gets marked "held" -- suppressing its put-down. `ARM_MIN_AREA` (0.06 of the
+frame) now also requires the box to be large, i.e. close. Measured on a 640x480 frame:
+
+| person box | at near edge | area | counts as arm |
+|---|---|---|---|
+| user's arm reaching in | yes | 19.5% | **yes** |
+| user seated, torso filling frame | yes | 54.7% | **yes** |
+| bystander stood at the bottom edge | yes | 3.4% | no |
+| bystander mid-room | no | 5.5% | no |
+| person walking past, far | yes | 3.8% | no |
+
+The `--show` window now draws only person boxes that pass this test. A bystander is not
+drawn and affects nothing: it cannot mark an object held and cannot suppress a put-down.
+Note the seated torso still qualifies - that is the laptop-webcam case, and the fix for
+it is camera aim or `--no-arm`, not this gate.
+
 ### Confidence sweep on a real scene (2026-09-19, Windows laptop)
 
 Swept with `perception/sweep_conf.py`: capture frames, predict once at the lowest

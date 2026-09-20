@@ -45,6 +45,11 @@ LOST_REST_MIN_S = 0.2   # stillness this long, then out of view, also counts
 MOVE_THR_PER_S = 0.15   # ego-compensated centre speed, as a fraction of the diagonal per second
 ARM_DISP = 0.08       # net ego-compensated displacement over an episode, as a fraction of the diagonal
 CONTACT_THR = 0.5     # share of the object box covered by an arm box
+# The user's own arm is CLOSE, so its box is big. A bystander across the room is small
+# even when they happen to stand at the bottom edge of the frame. Without this, anyone
+# walking past could be read as the user reaching in, and an object they pass in front of
+# would count as "held" -- suppressing its put-down. Share of total frame area.
+ARM_MIN_AREA = 0.06
 ACTIVE_WINDOW_S = 6.0 # an ACTIVE episode older than this no longer arms the trigger
 UNSEEN_S = 20.0
 BUFFER_S = 12.0
@@ -127,7 +132,7 @@ def frame_at(buffer, t):
     return min(buffer, key=lambda item: abs(item[0] - t))
 
 
-def draw_overlay(frame, boxes, names, confs, ids, targets, hud, fps, subtitle, show_arm=True):
+def draw_overlay(frame, boxes, names, confs, ids, targets, hud, fps, subtitle, arm_boxes=()):
     """The --show window: what the detector sees on top, what the VLM said underneath.
 
     Deliberately reads off the same `r.boxes` the trigger uses, so the window cannot
@@ -135,12 +140,14 @@ def draw_overlay(frame, boxes, names, confs, ids, targets, hud, fps, subtitle, s
     """
     f = frame.copy()
     h, w = f.shape[:2]
+    # The person class stays in the vocabulary whatever happens -- it absorbs people, who
+    # would otherwise be labelled as one of the real targets. But only a box that passed
+    # the arm test influences anything, so only those are worth drawing; bystanders in the
+    # background are noise on screen and nothing at all to the trigger.
+    arm_keys = {tuple(round(float(v), 1) for v in a) for a in arm_boxes}
     for b, n, c, i in zip(boxes, names, confs, ids):
         target = n in targets
-        # The person class earns its place in the vocabulary even when unused (it absorbs
-        # people, who would otherwise be labelled as one of the targets), but with the arm
-        # logic off it has no effect on anything and is pure clutter on screen.
-        if not target and not show_arm:
+        if not target and tuple(round(float(v), 1) for v in b) not in arm_keys:
             continue
         x1, y1, x2, y2 = (int(v) for v in b)
         colour = (0, 255, 255) if target else (200, 130, 0)   # targets yellow, the arm/person blue
@@ -363,7 +370,11 @@ def main():
         boxes = r.boxes.xyxy.cpu().numpy() if len(r.boxes) else np.zeros((0, 4))
         names = [r.names[int(c)] for c in r.boxes.cls] if len(r.boxes) else []
         ids = r.boxes.id.int().tolist() if r.boxes.id is not None else [-1] * len(names)
-        arms = [] if args.no_arm else [b for b, n in zip(boxes, names) if n == ARM and b[3] >= 0.9 * frame.shape[0]]
+        frame_area = frame.shape[0] * frame.shape[1]
+        arms = [] if args.no_arm else [
+            b for b, n in zip(boxes, names)
+            if n == ARM and b[3] >= 0.9 * frame.shape[0]                       # reaches the near edge
+            and (b[2] - b[0]) * (b[3] - b[1]) >= ARM_MIN_AREA * frame_area]    # and is close enough to be ours
 
         # A propped phone has no camera motion to remove, so the homography is both
         # wasted work (feature detection + optical flow + RANSAC on every frame) and a
@@ -479,7 +490,7 @@ def main():
             cv2.imshow("Compass - memory pipeline",
                        draw_overlay(frame, boxes, names, confs, ids, targets, snapshot, shown_fps,
                                     f"{args.device} imgsz={args.imgsz} conf={args.conf}",
-                                    show_arm=not args.no_arm))
+                                    arm_boxes=arms))
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
 
