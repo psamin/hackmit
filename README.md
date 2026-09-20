@@ -1,8 +1,3 @@
-# HackMIT: where's my medicine?
-
-Head camera sees the pill bottle put down → trigger → Claude describes where it landed → memory log → ask by voice.
-A Damiao arm fetches it. Plan and test results: the team's "HackMIT Memory + Retrieval Build Plan" doc.
-
 ## Setup (macOS, Apple Silicon)
 
 ```bash
