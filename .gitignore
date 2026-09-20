@@ -10,3 +10,4 @@ act_ckpt/
 act_final/
 openyam_dataset/
 openyam_all.db
+weights/hand_landmarker.task

@@ -93,8 +93,18 @@ def watch_for_grasp(control, policy, args):
                 subprocess.run(args.announce, shell=True, timeout=20, check=False)
             except subprocess.TimeoutExpired:
                 print("announcement timed out, carrying on", flush=True)
-        print(f"waiting {args.catch_s:.0f}s for a hand underneath", flush=True)
-        _time.sleep(args.catch_s)
+        if args.wait_for_hand:
+            from vla.hand_release import wait_for_hand
+
+            prompts = args.nag or ['say "please take your pills"', 'say "take your time, I have got it"']
+
+            def nag(n):
+                subprocess.run(prompts[n % len(prompts)], shell=True, timeout=20, check=False)
+
+            wait_for_hand(camera_index=args.camera_index, timeout_s=args.catch_s, nag_s=args.nag_s, on_nag=nag)
+        else:
+            print(f"waiting {args.catch_s:.0f}s for a hand underneath", flush=True)
+            _time.sleep(args.catch_s)
         if release:
             play(release)
         print("handover done - bottle released", flush=True)
@@ -156,6 +166,13 @@ def main() -> None:
                          "'catch, grab the bottle'. The release waits for it to finish, then --catch-s longer.")
     ap.add_argument("--catch-s", type=float, default=2.0,
                     help="--handover: seconds after the announcement before the gripper opens, to get a hand under it")
+    ap.add_argument("--wait-for-hand", action="store_true",
+                    help="--handover: hold the bottle until the camera sees a hand, nagging every --nag-s. "
+                         "--catch-s becomes the timeout it releases on anyway.")
+    ap.add_argument("--nag-s", type=float, default=3.0,
+                    help="--wait-for-hand: seconds between spoken prompts while waiting for a hand")
+    ap.add_argument("--nag", action="append", default=None,
+                    help="--wait-for-hand: a command to run for each prompt, repeatable; cycles through them")
     ap.add_argument("--grip-closed", type=float, default=0.85,
                     help="--handover: gripper below this counts as closed on the bottle")
     ap.add_argument("--replay-episode", type=int, default=None,
