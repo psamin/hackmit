@@ -112,11 +112,22 @@ def search_all(item, memory_jsonl: Path, limit=3):
         try:
             # Over-fetch so there is something left to dedupe: one object sitting in one
             # place for an hour produces many near-identical memories.
-            r = es.search(index=INDEX, size=25, sort=[{"logged_at": "desc"}], query={
-                "bool": {"must": {"multi_match": {"query": " ".join(expand(item)) or item, "fields": [
-                    "object^3", "location_description", "landmarks", "surface"], "fuzziness": "AUTO"}},
-                    "filter": {"term": {"event": "placed"}}}})
-            hits = [h["_source"] for h in r["hits"]["hits"]]
+            # "pills" expands to include the bare word "bottle", and sorting purely by recency then answers
+            # "where are my pills" with whichever bottle was last put down - a water bottle. When the question
+            # names something we have a canonical label for, ask for that label first and only widen if the
+            # index genuinely holds none, so a near-miss can never outrank the thing that was asked for.
+            hits = []
+            for phrase in canonical(item):
+                strict = es.search(index=INDEX, size=25, sort=[{"logged_at": "desc"}], query={
+                    "bool": {"must": {"match_phrase": {"object": phrase}},
+                             "filter": {"term": {"event": "placed"}}}})
+                hits += [h["_source"] for h in strict["hits"]["hits"]]
+            if not hits:
+                r = es.search(index=INDEX, size=25, sort=[{"logged_at": "desc"}], query={
+                    "bool": {"must": {"multi_match": {"query": " ".join(expand(item)) or item, "fields": [
+                        "object^3", "location_description", "landmarks", "surface"], "fuzziness": "AUTO"}},
+                        "filter": {"term": {"event": "placed"}}}})
+                hits = [h["_source"] for h in r["hits"]["hits"]]
             if hits:
                 return _distinct(hits, limit), "elasticsearch"
         except Exception:
@@ -133,6 +144,17 @@ SYNONYMS = {
     "phone": "phone", "cell": "phone", "cellphone": "phone", "mobile": "phone",
     "wallet": "wallet", "purse": "purse", "bag": "purse",
 }
+
+
+def canonical(item):
+    """The multi-word names `item` maps to, e.g. "pills" -> ["pill bottle"]. Used to rank the phrase above
+    its individual words, so "bottle" alone cannot pull a water bottle to the top."""
+    out = []
+    for t in item.lower().split():
+        mapped = SYNONYMS.get(t, "")
+        if " " in mapped:
+            out.append(mapped)
+    return out or ([item.strip()] if " " in item.strip() else [])
 
 
 def expand(item):
