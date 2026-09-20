@@ -3,7 +3,7 @@
     python vlm.py runs/p02/events/003_placed_0120.3      # describe one saved event
     python vlm.py --ask "where is the sauce bottle?" runs/p02/memory.jsonl
 """
-import base64, json, os, sys, threading, time
+import base64, codecs, json, os, sys, threading, time
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
@@ -11,15 +11,76 @@ from typing import Literal
 import anthropic
 from pydantic import BaseModel
 
+BOMS = ((codecs.BOM_UTF16_LE, "utf-16"), (codecs.BOM_UTF16_BE, "utf-16"), (codecs.BOM_UTF8, "utf-8-sig"))
+
+
+def _read_env(path):
+    """Decode .env whatever shell or editor wrote it.
+
+    Path.read_text() would use the cp1252 locale codec, and Windows shells do not write
+    cp1252: PowerShell 5.1's `>` and Out-File default to UTF-16 LE, newer PowerShell to
+    UTF-8 with a BOM. Either way the first key name arrives as mojibake, so
+    ANTHROPIC_API_KEY is never set and the only symptom is an auth failure on the first
+    event, with nothing pointing back at this file. Sniff the BOM instead of guessing.
+    """
+    raw = path.read_bytes()
+    for bom, enc in BOMS:
+        if raw.startswith(bom):
+            return raw.decode(enc)
+    return raw.decode("utf-8", errors="replace")
+
+
 _env = Path(__file__).with_name(".env")  # ANTHROPIC_API_KEY=... (gitignored)
 if _env.exists():
-    for line in _env.read_text().splitlines():
+    for line in _read_env(_env).splitlines():
         k, _, v = line.partition("=")
-        if k.strip() and not k.startswith("#"):
-            os.environ.setdefault(k.strip(), v.strip())
+        k = k.strip()
+        if k and not k.startswith("#"):
+            os.environ.setdefault(k, v.strip())
 
-MODEL = "claude-opus-5"
-FALLBACK = {"extra_headers": {"anthropic-beta": "server-side-fallback-2026-07-01"}, "extra_body": {"fallbacks": "default"}}
+# Sonnet, deliberately. This is label-reading and scene description from a few small
+# stills, not reasoning, and it is 2.5x cheaper per token than Opus in and out.
+# Override without editing: COMPASS_VLM_MODEL=claude-opus-5 python memory_pipeline.py ...
+MODEL = os.environ.get("COMPASS_VLM_MODEL", "claude-sonnet-5")
+
+# Output ceilings. Worth being precise about what these do and do not protect against:
+# nothing here is an agent loop. Each event is exactly one request and one response, no
+# tools, no retries, no continuation -- so there is no runaway-loop failure mode to guard
+# against, and the only way to spend more than expected is a long single answer. These
+# cap that. A Memory is ~150 tokens of JSON and a spoken answer is one or two sentences;
+# the remaining headroom is for adaptive thinking, which counts against max_tokens.
+MAX_TOKENS_MEMORY = 2048
+MAX_TOKENS_ANSWER = 1024
+# Every detection opens the trigger, because YOLOE's whole vocabulary is the target list
+# and it has no way to say "none of these" -- so a mug gets tracked as a pill bottle and
+# fires a real event. The VLM catches those, marking them "other" or leaving confidence
+# low, and these two thresholds stop that junk becoming a confident spoken answer about
+# someone's medication. Nothing is deleted; memory.jsonl still has every call.
+JUNK_CONFIDENCE = 0.2       # below this the memory is noise, drop it from the answer
+UNCERTAIN_CONFIDENCE = 0.4  # below this it is offered as a maybe, to be hedged
+EFFORT = "low"  # both jobs are description, not reasoning; also bounds thinking tokens
+
+# Server-side refusal fallbacks exist because the Opus and Fable safety classifiers
+# sometimes decline benign requests. Sonnet does not carry them, and the beta is only
+# documented for those models, so only send it when we are actually on one.
+FALLBACK = ({"extra_headers": {"anthropic-beta": "server-side-fallback-2026-07-01"},
+             "extra_body": {"fallbacks": "default"}}
+            if MODEL.startswith(("claude-opus", "claude-fable")) else {})
+# USD per million tokens, for the end-of-run summary only. Keep in step with MODEL.
+PRICES = {"claude-sonnet-5": (2.0, 10.0), "claude-opus-5": (5.0, 25.0), "claude-haiku-4-5": (1.0, 5.0)}
+
+
+def cost_usd(input_tokens, output_tokens, model=MODEL):
+    per_in, per_out = PRICES.get(model, (0.0, 0.0))
+    return input_tokens / 1e6 * per_in + output_tokens / 1e6 * per_out
+
+
+def log(tag, msg):
+    """One line per thing that happens, the same shape in every process, so a demo can
+    be followed in the terminal instead of inferred from silence afterwards."""
+    print(f"{datetime.now():%H:%M:%S} [{tag:<6}] {msg}", flush=True)
+
+
 _write_lock = threading.Lock()
 client = anthropic.Anthropic()
 
@@ -29,7 +90,18 @@ In AFTER, a yellow box marks where the tracker last saw the object. If there is 
 wearer's hand activity: find the object yourself. A single AFTER frame is a snapshot of the object at rest.
 Say what happened to that object and where it ended up, in words that would help the person find it later:
 the surface it is on and the nearby landmarks (\"on the counter, left of the sink, next to the kettle\").
-If the frames do not show the object being set down, say so in `event` rather than guessing."""
+If the frames do not show the object being set down, say so in `event` rather than guessing.
+
+YOU decide what the object is, not the detector. The detector is open-vocabulary: it scores a fixed list of text
+prompts against every box and applies the single best-scoring one. It has no way to answer "none of these", so it
+always returns one of the candidates, and it confuses visually similar ones - a pill bottle against a water bottle
+especially. Its label is a hint, not a fact. You can read printed labels, caps, sizes and materials that it cannot.
+Choose from the candidate list you are given and put that in `object`; use "other" if it is genuinely none of them.
+Do not repeat the detector's guess just because it was given to you.
+
+This matters because the person may ask "where is my medication?" and act on the answer. Calling a water bottle a
+pill bottle is worse than admitting uncertainty - lower `confidence` when the identity is not clear from the
+frames."""
 
 
 class Memory(BaseModel):
@@ -50,20 +122,62 @@ def describe_event(ev, memory_path):
     content = []
     for label, path in zip(("BEFORE", "DURING", "AFTER")[-len(ev["frames"]):], ev["frames"]):
         content += [{"type": "text", "text": label}, _image(path)]
-    content.append({"type": "text", "text": f"Tracked object class: {ev['object']}. Trigger: {ev['type']}."})
+    # The candidate list is exactly what the detector was allowed to say, so it is also the
+    # set the VLM should choose from. Falls back to the detector's own label for events
+    # written by an older pipeline that did not record the targets.
+    candidates = ev.get("targets") or [c.strip() for c in str(ev["object"]).split(",")]
+    content.append({"type": "text", "text":
+                    f"Candidate objects: {', '.join(candidates)}. "
+                    f"Detector's best guess, which may be wrong: {ev['object']}. "
+                    f"Trigger: {ev['type']}."})
+    log("VLM", f"-> {MODEL}  event {ev['id']} {ev['type']} {ev['object']}  "
+               f"{len(ev['frames'])} frame(s), candidates: {', '.join(candidates)}")
     t0 = time.perf_counter()
-    resp = client.messages.parse(model=MODEL, max_tokens=16000, system=SYSTEM,
+    resp = client.messages.parse(model=MODEL, max_tokens=MAX_TOKENS_MEMORY, system=SYSTEM,
+                                 output_config={"effort": EFFORT},
                                  messages=[{"role": "user", "content": content}], output_format=Memory, **FALLBACK)
     latency = time.perf_counter() - t0
     if resp.stop_reason == "refusal":
-        print(f"event {ev['id']}: refused", flush=True)
+        log("VLM", f"<- event {ev['id']} REFUSED; no memory written")
+        return None
+    if resp.stop_reason == "max_tokens":
+        # The schema is small, so this means thinking ate the budget. Raise
+        # MAX_TOKENS_MEMORY rather than lowering effort, which would cost accuracy.
+        log("VLM", f"<- event {ev['id']} hit max_tokens ({MAX_TOKENS_MEMORY}); no memory written")
         return None
     mem = {"logged_at": datetime.now().isoformat(timespec="seconds"), "video_t": ev["t"], "event_id": ev["id"],
-           "trigger": ev["type"], **resp.parsed_output.model_dump(), "frames": ev["frames"],
+           "trigger": ev["type"], **resp.parsed_output.model_dump(),
+           # Kept next to the VLM's own answer so disagreements are greppable: they are the
+           # evidence for whether the prompt set discriminates on real objects.
+           "detector_label": ev["object"], "frames": ev["frames"],
            "vlm_latency_s": round(latency, 2), "input_tokens": resp.usage.input_tokens, "output_tokens": resp.usage.output_tokens}
     with _write_lock, open(memory_path, "a") as f:
         f.write(json.dumps(mem) + "\n")
-    print(f"event {ev['id']}: {mem['event']} {mem['object']} -> {mem['location_description']} ({latency:.1f}s)", flush=True)
+    corrected = "" if mem["object"] == ev["object"] else f"  (detector said {ev['object']})"
+    log("VLM", f"<- event {ev['id']} {mem['event']} {mem['object']}{corrected}  "
+               f"conf {mem['confidence']}  {latency:.1f}s  "
+               f"{mem['input_tokens']}/{mem['output_tokens']} tok  "
+               f"${cost_usd(mem['input_tokens'], mem['output_tokens']):.4f}")
+    log("VLM", f"   \"{mem['location_description']}\"")
+    log("DB", f"memory.jsonl <- event {ev['id']} appended ({memory_path})")
+    # Mirror into Elasticsearch via the Pam server so the voice agent can search it.
+    # memory.jsonl is still the source of truth; a dead endpoint must not lose the memory.
+    # It used to swallow the outcome entirely, which meant a down index looked exactly
+    # like a working one until someone asked a question and got nothing.
+    server = os.environ.get("PAM_SERVER", "http://127.0.0.1:8000")
+    try:
+        import urllib.request
+        with urllib.request.urlopen(urllib.request.Request(
+                server + "/api/es/index",
+                data=json.dumps(mem).encode(), headers={"Content-Type": "application/json"}),
+                timeout=3) as r:
+            body = json.loads(r.read() or b"{}")
+        ok = bool(body.get("indexed"))
+        log("DB", f"elasticsearch <- event {ev['id']} "
+                  + ("indexed OK" if ok else f"NOT indexed (is ELASTICSEARCH_URL set?) {body}"))
+    except Exception as exc:
+        log("DB", f"elasticsearch <- event {ev['id']} FAILED: {type(exc).__name__}: {exc} "
+                  f"(memory.jsonl still has it; is {server} running?)")
     return mem
 
 
@@ -80,16 +194,33 @@ def ask(question, memory_path):
                                 "frames": [s["frame"]]}, memory_path)
             memories += [m] if m else []
     memories = [m for m in memories if m["event"] not in ("still_in_hand", "no_change")]
-    lines = [f"- {m['logged_at']} (video {m['video_t']}s): {m['event']} {m['object']}: {m['location_description']} (confidence {m['confidence']})"
-             for m in memories]
+    memories = [m for m in memories
+                if m.get("object") != "other" and float(m.get("confidence") or 0) >= JUNK_CONFIDENCE]
+    lines = []
+    for m in memories:
+        doubt = " -- UNCERTAIN" if float(m.get("confidence") or 0) < UNCERTAIN_CONFIDENCE else ""
+        lines.append(f"- {m['logged_at']} (video {m['video_t']}s): {m['event']} {m['object']}: "
+                     f"{m['location_description']} (confidence {m['confidence']}{doubt})")
+    if not lines:
+        lines = ["(nothing recorded yet)"]
+    log("ASK", f"-> {MODEL}  \"{question}\"  over {len(lines)} memory line(s)")
     t0 = time.perf_counter()
     resp = client.messages.create(
-        model=MODEL, max_tokens=16000, output_config={"effort": "low"},
+        model=MODEL, max_tokens=MAX_TOKENS_ANSWER, output_config={"effort": EFFORT},
         system="You answer questions about where the user left things, from the memory log below. Answer in one or two "
-               "short spoken sentences. Use the most recent 'placed' memory for the object. If the log doesn't say, say so.\n\n"
+               "short spoken sentences. Use the most recent 'placed' memory for the object. If the log doesn't say, say so.\n"
+               "Prefer the most recent high-confidence memory. A line marked UNCERTAIN may be a misdetection: you may "
+               "use it, but say you are not sure. Never state a medication's location with certainty from an UNCERTAIN "
+               "line -- the person will act on your answer.\n\n"
                "Memory log (oldest first):\n" + "\n".join(lines),
         messages=[{"role": "user", "content": question}], **FALLBACK)
+    # describe_event already guards this; ask() is the path the user actually hears, so a
+    # refusal that survives the fallback chain must not come back as an empty spoken answer.
+    if resp.stop_reason == "refusal":
+        return "Sorry, I can't answer that one.", time.perf_counter() - t0
     text = "".join(b.text for b in resp.content if b.type == "text")
+    log("ASK", f"<- \"{text}\"  ({time.perf_counter() - t0:.1f}s, "
+               f"{resp.usage.input_tokens}/{resp.usage.output_tokens} tok)")
     return text, time.perf_counter() - t0
 
 

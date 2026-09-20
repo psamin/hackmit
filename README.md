@@ -30,6 +30,23 @@ Add `--no-vlm` to the pipeline to skip Claude calls. Ctrl-C ends a live run and 
 
 The iPhone app sends one JPEG per WebSocket binary message to `ws://<laptop-ip>:8765`, 720p at 10 fps.
 
+## Pam — voice agent (server/ + phone/agent.html)
+
+```bash
+cp server/.env.example server/.env        # DEEPGRAM_API_KEY is the only required key
+perception/.venv/Scripts/python server/app.py
+# Phone:  https://<laptop-ip>:8443/       — Pam's voice page
+#         https://<laptop-ip>:8443/camera — the camera client
+# Laptop: http://127.0.0.1:8000/?demo=1   — test panel: every function without voice
+```
+
+Deepgram handles listen/think/speak over one WebSocket; the page holds a token from
+`/api/dg-token`, and each agentic action is a client-side function call back to
+`server/app.py`. Irreversible actions (text, call, ride, arm) render a big confirm
+card on the phone — the tap is the consent. Reminders fire through `/api/push`
+(SSE) into the live session via `InjectUserMessage`. Without ES/Twilio/Amadeus keys
+everything degrades to memory.jsonl / link cards.
+
 ## Arm (5× Damiao DM-J4340P-2EC, CAN at 1 Mbit/s)
 
 Needs a gs_usb/candleLight USB-CAN adapter (USB ID `1d50:606f`) and 24 V power. The LED is solid red when powered

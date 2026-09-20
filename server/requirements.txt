@@ -1,0 +1,7 @@
+fastapi
+uvicorn[standard]
+httpx
+elasticsearch    # optional: find_object falls back to memory.jsonl without a server
+twilio           # optional: silent SMS + call bridging; tel:/sms: cards work without it
+icalendar
+python-dateutil

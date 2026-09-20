@@ -3,6 +3,7 @@ __pycache__/
 .DS_Store
 .env
 /weights/
+server_log.txt
 
 # Trained checkpoints and datasets: large binaries, rebuildable from the recordings
 act_ckpt/

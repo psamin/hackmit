@@ -1,0 +1,1345 @@
+<!DOCTYPE html>
+<!--
+  Pam — the voice agent. One page on the same HTTPS origin as the camera page.
+
+  Talk path:   mic -> PCM16 -> wss://agent.deepgram.com/v1/agent/converse -> audio back
+  Action path: Deepgram sends FunctionCallRequest -> this page executes it
+               (in-page UI or fetch to the laptop) -> FunctionCallResponse.
+
+  No build step: the Agent wire protocol is small enough to hold in one file,
+  which keeps every byte debuggable. Token auth rides the WebSocket subprotocol
+  header, the only header browsers allow.
+
+  ?demo=1 shows a test panel that calls each function handler directly, so the
+  whole action layer is verifiable before any voice session exists.
+
+  Design: flat white medical-tech. One blue used only for signal (logo, the
+  primary action, live state, active tab). Grouped lists with hairlines carry
+  everything else. Nothing animates until Pam is live; then a single ring
+  around the sphere breathes with the audio.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Pam</title>
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0d1720" media="(prefers-color-scheme: dark)">
+<style>
+  :root {
+    color-scheme: light dark; font-size: clamp(17px, 4.2vw, 19px);
+    --bg: #ffffff; --paper: #f5f8fb; --ink: #0f1f2e; --slate: #56677a; --line: #dfe7ee;
+    --blue: #1e63b8; --blue-deep: #17509a; --blue-mist: #e8f0fa; --blue-text: #17509a; --on-blue: #ffffff;
+    --error: #b3261e; --success: #1e7a4c; --shadow: #10345a12;
+    --ease: cubic-bezier(.23,1,.32,1);
+    --nav-h: 72px;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; height: 100dvh; overflow: hidden; display: flex; flex-direction: column; background: var(--bg); color: var(--ink); font: 1rem/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; }
+  button, input, summary, a { -webkit-tap-highlight-color: transparent; }
+  button, input { font: inherit; color: inherit; }
+  button, a.action, summary { cursor: pointer; touch-action: manipulation; }
+  button { border: 0; background: none; padding: 0; }
+  button:active { transform: scale(.985); }
+  button:disabled { opacity: .5; cursor: default; }
+  :focus-visible { outline: 3px solid var(--blue); outline-offset: 3px; }
+  [hidden] { display: none !important; }
+  h1, h2, h3, p { margin: 0; }
+  .display { font-family: ui-rounded, "SF Pro Rounded", "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif; letter-spacing: -.03em; }
+  .skip { position: fixed; transform: translateY(-160%); padding: 14px; background: var(--bg); z-index: 5; }
+  .skip:focus { transform: none; }
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .col { width: min(100%, 760px); margin-inline: auto; padding-inline: 0; }
+  .topbar-inner { width: min(1180px, 100%); margin-inline: auto; padding-inline: 24px; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  .workspace { width: min(1180px, 100%); margin-inline: auto; flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 264px; gap: 24px; padding: 24px 24px 18px; margin-bottom: calc(var(--nav-h) + env(safe-area-inset-bottom)); }
+  .icon { width: 24px; height: 24px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  .icon-definitions { position: absolute; width: 0; height: 0; overflow: hidden; }
+
+  /* Top bar */
+  .topbar { flex: none; z-index: 3; display: flex; justify-content: space-between; align-items: center; gap: 12px; min-height: 64px; border-bottom: 1px solid var(--line); background: var(--bg); }
+  .wordmark { display: block; width: 78px; aspect-ratio: 592 / 215; background-color: var(--blue); -webkit-mask: url("/assets/pam-logo.png") center / contain no-repeat; mask: url("/assets/pam-logo.png") center / contain no-repeat; }
+  .topbar-actions { display: flex; align-items: center; gap: 8px; }
+  .chip { min-height: 44px; padding: 8px 16px; border: 1px solid var(--line); border-radius: 999px; background: var(--bg); color: var(--blue-text); font-size: .85rem; font-weight: 600; }
+  .settings { position: relative; }
+  .settings > summary { list-style: none; display: grid; place-items: center; width: 44px; height: 44px; border: 1px solid var(--line); border-radius: 50%; background: var(--bg); color: var(--ink); font-size: .85rem; font-weight: 600; }
+  .settings > summary::-webkit-details-marker { display: none; }
+  .settings-panel { position: absolute; top: calc(100% + 8px); right: 0; width: min(340px, 88vw); max-height: calc(100dvh - 100px); overflow-y: auto; border: 1px solid var(--line); border-radius: 16px; background: var(--bg); padding: 8px 18px 16px; box-shadow: 0 16px 40px var(--shadow); z-index: 4; }
+  .settings-panel h2 { font-size: .95rem; padding: 12px 0 4px; }
+  .settings-panel label { display: flex; align-items: center; justify-content: space-between; min-height: 52px; gap: 12px; font-size: .9rem; cursor: pointer; border-top: 1px solid var(--line); }
+  .settings-panel label:first-of-type { border-top: 0; }
+  input[type=checkbox] { width: 22px; height: 22px; flex: none; accent-color: var(--blue); }
+  .settings-panel p { color: var(--slate); font-size: .78rem; margin-top: 10px; }
+
+  /* Main scroll region above the flat tab bar */
+  main { position: relative; z-index: 1; min-width: 0; min-height: 0; overflow-y: auto; scrollbar-width: thin; padding: 2px 4px 16px; }
+  main > section { display: flex; flex-direction: column; gap: 16px; }
+  main > section[hidden] { display: none; }
+  .talk-heading { padding: 2px 4px 4px; }
+  .voice-panel { background: var(--paper); border: 1px solid var(--line); border-radius: 28px; padding: 24px; }
+  .voice-footer { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 0 4px; font-size: .8rem; color: var(--slate); }
+  .voice-footer button { min-height: 44px; padding-inline: 8px; font-size: .8rem; color: var(--blue-text); font-weight: 600; }
+  .new-memory-note { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* Talk: voice stage. It grows to absorb spare height so tall phones don't
+     leave a dead gap above the tab bar; the sphere is sized from that space. */
+  .stage { text-align: center; display: grid; justify-items: stretch; gap: 12px; }
+  h1 { font-size: clamp(1.4rem, 4.5vw, 1.8rem); font-weight: 600; line-height: 1.2; }
+  .intro { color: var(--slate); font-size: .9rem; margin-top: 6px; }
+  .voice-state { justify-self: center; }
+  .visual-zone { height: clamp(104px, 24dvh, 230px); display: grid; place-items: center; overflow: clip; contain: paint; }
+  .subtitle-area { display: grid; align-content: center; justify-items: stretch; min-width: 0; }
+  #subtitle-window { --caption-line: 30px; line-height: var(--caption-line); max-height: calc(var(--caption-line) * 5); overflow: hidden; font-size: clamp(1.05rem, 1.8vw, 1.2rem); color: var(--ink); overflow-wrap: anywhere; text-align: center; }
+  #subtitle-text { margin: 0; line-height: inherit; }
+  #subtitle-placeholder { color: var(--slate); font-size: 1rem; line-height: 1.6; max-width: 34ch; margin: auto; }
+  #subtitle-window:empty { display: none; }
+  /* The sphere is sized from the space the stage really has, on every resize.
+     It is a flex child that can give up height (min-height: 0) so the text and
+     controls around it always win; the sphere is the thing that shrinks. */
+  .orb-scene { position: relative; width: clamp(64px, 16dvh, 168px); height: clamp(64px, 16dvh, 168px); flex: none; margin: 0; aspect-ratio: 1; }
+  #view-talk > .response-area { flex: none; }
+  #voice-orb { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .orb-fallback { position: absolute; inset: 6%; border-radius: 50%; background: radial-gradient(circle at 32% 26%, #ffffff 0%, #eef5fd 22%, #b4d3f2 50%, #4f8fd6 76%, #1e63b8 100%); box-shadow: inset -10px -14px 24px #0f345a33, inset 8px 10px 18px #ffffffb3; }
+  .orb-ring { position: absolute; inset: 1px; border-radius: 50%; border: 1.5px solid var(--blue); opacity: 0; transition: opacity 220ms var(--ease); pointer-events: none; }
+  body[data-voice="listening"] .orb-ring, body[data-voice="speaking"] .orb-ring { opacity: .9; }
+  body[data-voice="thinking"] .orb-ring, body[data-voice="connecting"] .orb-ring { opacity: .45; border-style: dashed; }
+  .voice-state { display: inline-flex; align-items: center; gap: 8px; font-size: .82rem; font-weight: 600; color: var(--slate); }
+  .voice-state::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--line); }
+  body:is([data-voice="listening"], [data-voice="speaking"]) .voice-state { color: var(--blue-text); }
+  body:is([data-voice="listening"], [data-voice="speaking"]) .voice-state::before { background: var(--blue); }
+  #status { color: var(--slate); max-width: 48ch; min-height: 1.5em; margin: 14px auto 0; font-size: .8rem; text-align: center; overflow-wrap: anywhere; }
+  #status.error, #cam.err { color: var(--error); }
+
+  /* Talk: actions */
+  .actions { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 10px; margin-top: 24px; align-items: stretch; }
+  .actions:has(#mic-toggle:not([hidden])) { grid-template-columns: 64px minmax(0, 1fr) auto; }
+  #features-open { display: grid; justify-items: center; align-content: center; gap: 3px; min-height: 56px; border: 1px solid var(--line); border-radius: 18px; color: var(--blue-text); background: var(--bg); }
+  #features-open span { font-size: .68rem; font-weight: 600; }
+  #features-open .icon { width: 22px; height: 22px; }
+  #talk { min-height: 62px; min-width: 0; padding-inline: 12px; border-radius: 999px; background: var(--blue); color: var(--on-blue); font-size: 1rem; font-weight: 600; white-space: nowrap; transition: transform 120ms var(--ease); }
+  #talk.listening, #talk.speaking, #talk:disabled { background: var(--blue-deep); }
+  #mic-toggle { min-height: 62px; min-width: 62px; padding: 0 18px; border: 1px solid var(--line); border-radius: 999px; background: var(--bg); color: var(--blue-text); font-size: .85rem; font-weight: 600; white-space: nowrap; }
+  #mic-toggle[aria-pressed="true"] { background: var(--blue-mist); border-color: var(--blue); }
+
+  /* Grouped lists (the medical-app row pattern) */
+  .list { margin-top: 18px; border: 1px solid var(--line); border-radius: 18px; background: var(--paper); overflow: hidden; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 14px; width: 100%; min-height: 60px; padding: 12px 18px; text-align: left; border-top: 1px solid var(--line); border-radius: 0; background: transparent; color: var(--ink); font-weight: 600; font-size: .95rem; }
+  .row:first-child { border-top: 0; }
+  .row .row-sub { display: block; color: var(--slate); font-size: .8rem; font-weight: 400; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row .chev { color: var(--slate); font-size: 1.4rem; line-height: 1; font-weight: 400; flex: none; }
+  .row .thumb { width: 52px; height: 52px; flex: none; border-radius: 12px; object-fit: cover; background: var(--line); }
+  .row .row-main { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .row .row-main strong { display: block; }
+
+  /* Answer card */
+  .response-area { border: 1px solid var(--line); border-radius: 24px; background: var(--bg); overflow: hidden; }
+  .response-area:not(:has(#card.show, #photo.show)) { display: none; }
+  .result-heading { display: flex; align-items: center; justify-content: space-between; padding: 8px 16px 0 20px; font-size: .8rem; color: var(--slate); }
+  #result-close { min-height: 44px; min-width: 44px; font-size: .85rem; font-weight: 600; color: var(--blue-text); }
+  #card, #photo { display: none; flex-direction: column; text-align: left; padding: 18px 20px 20px; gap: 12px; }
+  #card.show, #photo.show { display: flex; }
+  #card .title, #photo .cap { font-size: 1.05rem; font-weight: 650; }
+  #card .body { color: var(--slate); font-size: .92rem; white-space: pre-line; overflow-wrap: anywhere; }
+  #card img, #photo img { width: 100%; aspect-ratio: 16 / 9; max-height: 300px; object-fit: contain; border-radius: 16px; background: var(--paper); }
+  a.action { display: block; min-height: 56px; display: flex; align-items: center; justify-content: center; border-radius: 999px; background: var(--blue); color: var(--on-blue); text-decoration: none; font-size: .95rem; font-weight: 600; }
+  a.action.secondary { background: var(--bg); color: var(--blue-text); border: 1px solid var(--line); }
+
+  .conversation { margin-top: 10px; }
+  .conversation summary { min-height: 48px; display: flex; align-items: center; justify-content: center; font-size: .85rem; font-weight: 600; color: var(--slate); }
+  #log { max-height: 320px; overflow: auto; overflow-wrap: anywhere; font-size: .9rem; display: grid; gap: 8px; padding: 4px 0 8px; }
+  #log:empty::before { content: "Your conversation will appear here when you talk with Pam."; color: var(--slate); }
+  #log > div { border-radius: 14px; padding: 12px 14px; background: var(--paper); }
+  #log .u { background: var(--blue-mist); color: var(--ink); margin-left: 24px; }
+
+  /* Memories & camera views */
+  .view-heading { margin: 4px 0 16px; }
+  .view-heading h2 { font-size: 1.45rem; font-weight: 600; }
+  .lead { color: var(--slate); margin-top: 4px; font-size: .92rem; }
+  .record { display: flex; gap: 14px; align-items: flex-start; padding: 16px 18px; border: 1px solid var(--line); border-radius: 18px; background: var(--paper); }
+  .record img { width: 64px; height: 64px; border-radius: 12px; object-fit: cover; flex: none; background: var(--line); }
+  .record > div { min-width: 0; }
+  #memory-title { display: block; font-size: 1rem; font-weight: 650; }
+  #memory-detail { color: var(--slate); margin-top: 4px; font-size: .92rem; overflow-wrap: anywhere; }
+  #memory-time { display: block; color: var(--slate); font-size: .78rem; margin-top: 8px; }
+  .feed-state { margin-top: 10px; color: var(--slate); font-size: .78rem; }
+  .search-field { display: grid; gap: 8px; margin-top: 20px; font-size: .85rem; font-weight: 600; }
+  .search-field input { width: 100%; min-height: 54px; padding: 12px 18px; border: 1px solid var(--line); border-radius: 999px; background: var(--bg); }
+  .search-field input:focus { border-color: var(--blue); outline: none; box-shadow: 0 0 0 3px var(--blue-mist); }
+  input::placeholder { color: var(--slate); opacity: 1; }
+  #memory-history { list-style: none; margin: 14px 0 0; padding: 0; border: 1px solid var(--line); border-radius: 18px; background: var(--paper); overflow: hidden; }
+  #memory-history li + li { border-top: 1px solid var(--line); }
+  #memory-history li:not(:has(button)) { padding: 16px 18px; color: var(--slate); font-size: .9rem; }
+  #memory-history .row { border-top: 0; font-weight: 400; }
+  #memory-history .row strong { font-weight: 600; }
+  .panel { padding: 18px 20px 20px; border: 1px solid var(--line); border-radius: 18px; background: var(--bg); }
+  .panel h3 { font-size: 1.05rem; font-weight: 650; }
+  #cam { display: flex; align-items: center; gap: 10px; color: var(--slate); margin-top: 8px; font-size: .92rem; overflow-wrap: anywhere; }
+  #cam::before { content: ""; width: 10px; height: 10px; border-radius: 50%; background: var(--line); flex: none; }
+  #cam.on { color: var(--success); } #cam.on::before { background: var(--success); }
+  #cam.err::before { background: var(--error); }
+  .camera-controls { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+  .camera-controls button { flex: 1; min-height: 56px; border-radius: 999px; font-weight: 600; font-size: .95rem; }
+  #camera-start { background: var(--blue); color: var(--on-blue); }
+  #camera-stop { background: var(--bg); color: var(--blue-text); border: 1px solid var(--line); }
+  #camera-details { margin-top: 10px; }
+  #camera-details summary { min-height: 48px; display: flex; align-items: center; font-size: .88rem; font-weight: 600; color: var(--blue-text); }
+  #camera-preview { display: block; width: 100%; height: 100%; object-fit: cover; background: var(--blue-mist); }
+  .privacy { color: var(--slate); font-size: .85rem; margin-top: 12px; }
+
+  /* Flat tab bar */
+  .bottom-nav { position: fixed; z-index: 4; left: 0; right: 0; bottom: 0; height: calc(var(--nav-h) + env(safe-area-inset-bottom)); padding: 8px 12px calc(8px + env(safe-area-inset-bottom)); background: var(--bg); border-top: 1px solid var(--line); }
+  .bottom-nav .tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; width: min(100%, 520px); margin-inline: auto; height: 100%; }
+  .bottom-nav button { min-height: 56px; border-radius: 14px; color: var(--slate); font-size: .85rem; font-weight: 600; white-space: nowrap; position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 6px; line-height: 1; }
+  .bottom-nav button[aria-selected="true"] { color: var(--blue-text); background: var(--blue-mist); }
+  .bottom-nav button[data-new="true"]::after { content: ""; width: 7px; height: 7px; background: var(--blue); border-radius: 50%; position: absolute; right: 12px; top: 10px; }
+  /* Camera state rides beside the label as a tiny dot + word, so all three tabs stay one line tall. */
+  .camera-badge { display: inline-flex; align-items: center; gap: 4px; font-size: .68rem; font-weight: 500; color: var(--slate); }
+  .camera-badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--line); }
+  .camera-badge.on::before { background: var(--success); }
+  .camera-badge.err::before { background: var(--error); }
+  .bottom-nav button[aria-selected="true"] .camera-badge { color: var(--blue-text); }
+
+  #demo { display: none; gap: 10px; flex-wrap: wrap; margin-top: 20px; padding-inline: 20px; }
+  #demo.show { display: flex; }
+  #demo button { font-size: .8rem; min-height: 44px; padding: 8px 14px; border: 1px solid var(--line); border-radius: 999px; }
+
+  /* Memory saved: one soft sweep of light, nothing else moves */
+  #memory-shine { position: fixed; inset: 0; z-index: 0; overflow: hidden; pointer-events: none; }
+  #memory-shine::after { content: ""; position: absolute; inset: -30% -50%; opacity: 0; background: linear-gradient(110deg, transparent 40%, #1e63b80d 47%, #ffffff99 50%, #1e63b80d 53%, transparent 60%); }
+  @keyframes memory-shine { 0% { transform: translateX(-55%); opacity: 0; } 25%, 75% { opacity: 1; } 100% { transform: translateX(55%); opacity: 0; } }
+  @media (prefers-reduced-motion: no-preference) { html:not([data-effects="off"]) #memory-shine.shine::after { animation: memory-shine 1500ms cubic-bezier(.45,0,.2,1) 1; } }
+  @media (hover: hover) and (pointer: fine) { .row:hover, .chip:hover, .settings > summary:hover, #mic-toggle:hover, #camera-stop:hover { background: var(--blue-mist); } #talk:hover, #camera-start:hover { background: var(--blue-deep); } .bottom-nav button:not([aria-selected="true"]):hover { color: var(--blue-text); } }
+
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0d1720; --paper: #142130; --ink: #eef3f8; --slate: #a9b8c7; --line: #26384a; --blue: #7db6f0; --blue-deep: #5ea4ea; --blue-mist: #1a3352; --blue-text: #9cc8f5; --on-blue: #0b1e33; --shadow: #00000066; }
+    .orb-fallback { background: radial-gradient(circle at 32% 26%, #ffffff 0%, #dbeafc 22%, #7db6f0 50%, #2f6fb5 76%, #1a4a80 100%); }
+  }
+  html[data-large="true"] { font-size: 23px; }
+  html[data-contrast="true"] { color-scheme: light; --bg: #fff; --paper: #f2f6fa; --ink: #071626; --slate: #1f3546; --line: #4c657c; --blue: #124a88; --blue-deep: #0d3a6b; --blue-mist: #e3edf8; --blue-text: #0d3a6b; --on-blue: #fff; }
+  html[data-effects="off"] *, html[data-effects="off"] *::before, html[data-effects="off"] *::after { animation: none !important; transition: none !important; }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } button:active { transform: none; } }
+
+  .camera-dock { align-self: start; min-width: 0; padding: 4px 0; }
+  .dock-heading { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+  .dock-heading h2 { font-size: .95rem; font-weight: 600; }
+  .dock-heading span { font-size: .72rem; color: var(--slate); }
+  #camera-peek { display: block; width: 100%; border: 1px solid var(--line); border-radius: 24px; overflow: hidden; background: var(--paper); text-align: left; }
+  .mini-surface { display: block; position: relative; aspect-ratio: 16 / 10; background: var(--blue-mist); }
+  .mini-surface video { position: absolute; inset: 0; }
+  .camera-placeholder { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--blue-text); font-size: .8rem; }
+  .camera-placeholder .icon { width: 32px; height: 32px; }
+  .mini-copy { display: flex; padding: 16px; gap: 12px; align-items: center; justify-content: space-between; }
+  .mini-copy strong { display: block; font-size: .9rem; font-weight: 600; }
+  .mini-copy small { display: block; color: var(--slate); margin-top: 3px; font-size: .74rem; }
+  .dock-note { margin: 14px 4px 0; color: var(--slate); font-size: .8rem; line-height: 1.6; }
+  dialog { width: min(680px, calc(100% - 32px)); max-height: calc(100dvh - 40px); padding: 0; border: 1px solid var(--line); border-radius: 28px; background: var(--bg); color: var(--ink); box-shadow: 0 24px 80px #15345826; overscroll-behavior: contain; }
+  dialog::backdrop { background: #142f4b66; }
+  .dialog-head { position: sticky; top: 0; display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 16px 22px; background: var(--bg); border-bottom: 1px solid var(--line); z-index: 1; }
+  .dialog-head h2 { font-size: 1.1rem; font-weight: 650; }
+  .dialog-close { min-width: 56px; min-height: 44px; padding: 8px; color: var(--blue-text); font-size: .85rem; font-weight: 600; }
+  .dialog-body { padding: 22px; }
+  .feature-welcome { display: grid; grid-template-columns: minmax(0, 1fr) 180px; gap: 12px; align-items: center; border-radius: 20px; background: var(--blue-mist); padding: 20px; }
+  .feature-welcome h3 { font-size: 1.3rem; font-weight: 600; line-height: 1.2; margin-bottom: 10px; }
+  .feature-welcome p { font-size: .85rem; color: var(--slate); }
+  .feature-welcome img { width: 180px; height: 120px; object-fit: contain; }
+  .capability-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 0; margin: 20px 0 0; list-style: none; }
+  .capability-list li { border: 1px solid var(--line); border-radius: 18px; padding: 16px; }
+  .capability-list h3 { font-size: .95rem; font-weight: 600; margin-bottom: 6px; }
+  .capability-list p { color: var(--slate); font-size: .82rem; }
+  .feature-example { display: block; margin-top: 10px; color: var(--blue-text); font-size: .8rem; }
+  #feature-search { width: 100%; }
+  #camera-dialog { width: min(920px, calc(100% - 32px)); }
+  #camera-expanded { display: block; width: 100%; max-height: 60dvh; aspect-ratio: 16 / 9; object-fit: contain; border-radius: 18px; background: var(--paper); }
+  #camera-expanded-empty { padding: 44px 20px; background: var(--paper); border-radius: 18px; text-align: center; }
+  #camera-expanded-empty .icon { width: 44px; height: 44px; color: var(--blue); margin-bottom: 12px; }
+  #camera-expanded-status { margin-top: 16px; font-size: .9rem; color: var(--slate); }
+  #camera-dialog-start, #camera-dialog-stop, #camera-open { min-height: 48px; padding: 10px 18px; border: 1px solid var(--line); border-radius: 999px; font-size: .85rem; font-weight: 600; color: var(--blue-text); }
+  #camera-dialog-start { background: var(--blue); color: var(--on-blue); border-color: var(--blue); }
+  @media (max-width: 800px) and (min-height: 501px) { .camera-dock { padding: 0; } .dock-heading, .dock-note { display: none; } #camera-peek { display: grid; grid-template-columns: 104px minmax(0, 1fr); height: 82px; border-radius: 20px; } .mini-surface { height: 80px; aspect-ratio: auto; } .mini-copy { padding: 12px; } .mini-copy .icon { width: 20px; } .camera-placeholder { gap: 4px; font-size: .7rem; } .camera-placeholder .icon { width: 24px; height: 24px; } }
+  @media (max-width: 480px) { .feature-welcome { grid-template-columns: minmax(0, 1fr) 110px; padding: 16px; } .feature-welcome h3 { font-size: 1.1rem; } .feature-welcome img { width: 110px; height: 110px; } .dialog-head, .dialog-body { padding: 16px; } .capability-list { grid-template-columns: minmax(0, 1fr); } }
+
+  /* Fit on every phone: the Talk screen must never scroll. Trim by height, not width. */
+  @media (max-width: 800px) { .workspace { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) 82px; gap: 12px; padding: 12px 12px 10px; } .topbar-inner { padding-inline: 16px; } main { padding: 0 2px 4px; } main > section { gap: 12px; } .voice-panel { padding: 18px 16px; border-radius: 24px; } .talk-heading .intro { display: none; } .visual-zone { height: clamp(100px, 20dvh, 170px); } #subtitle-window { --caption-line: 28px; font-size: 1.05rem; } .actions { grid-template-columns: 52px minmax(0, 1fr); gap: 8px; margin-top: 18px; } .actions:has(#mic-toggle:not([hidden])) { grid-template-columns: 52px minmax(0, 1fr) auto; } #talk, #mic-toggle { min-height: 56px; font-size: .95rem; } #mic-toggle { min-width: 52px; padding-inline: 10px; } .voice-footer { font-size: .75rem; } }
+  @media (max-width: 380px) { .chip { padding-inline: 12px; } .wordmark { width: 70px; } .voice-panel { padding: 14px 12px; } #subtitle-window { --caption-line: 26px; } }
+  @media (max-height: 720px) and (max-width: 800px) { .visual-zone { height: 90px; } .orb-scene { width: 68px; height: 68px; } .actions { margin-top: 12px; } .stage { gap: 8px; } #status { margin-top: 10px; } .has-captions .talk-heading { display: none; } .has-captions .visual-zone { height: 70px; } .has-captions .orb-scene { width: 56px; height: 56px; } .voice-footer { display: none; } }
+  /* Landscape phones and very short windows: header and nav already take 136px,
+     so the stage collapses to greeting + a small sphere + one instruction line. */
+  @media (max-height: 500px) and (min-width: 600px) { :root { --nav-h: 60px; } .topbar { min-height: 54px; } .workspace { grid-template-columns: minmax(0, 1fr) 180px; grid-template-rows: minmax(0, 1fr); padding: 10px 16px; gap: 16px; } .talk-heading, .voice-footer { display: none; } .voice-panel { padding: 12px; } .stage { grid-template-columns: 90px minmax(0, 1fr); column-gap: 14px; row-gap: 2px; } .visual-zone, .has-captions .visual-zone { grid-column: 1; grid-row: 1 / 3; height: 96px; } .orb-scene, .has-captions .orb-scene { width: 64px; height: 64px; } .voice-state { grid-column: 2; font-size: .75rem; } .subtitle-area { grid-column: 2; } #subtitle-window { --caption-line: 24px; font-size: .9rem; text-align: left; } .actions { margin-top: 10px; } #talk, #mic-toggle, #features-open { min-height: 48px; } #status { margin-top: 8px; font-size: .75rem; } .bottom-nav button { min-height: 44px; } }
+  @media (max-height: 720px) and (max-width: 800px) { .has-captions .stage { grid-template-columns: 64px minmax(0, 1fr); column-gap: 12px; align-items: center; } .has-captions .visual-zone { grid-column: 1; grid-row: 1 / 3; } .has-captions .voice-state { grid-column: 2; justify-self: start; font-size: .75rem; } .has-captions .subtitle-area { grid-column: 2; } .has-captions #subtitle-window { text-align: left; } }
+  @media (min-height: 501px) and (max-height: 800px) and (min-width: 801px) { .workspace { padding-block: 12px; } .talk-heading .intro { display: none; } .voice-panel { padding: 18px 20px; } .visual-zone { height: 110px; } .orb-scene { width: 80px; height: 80px; } .actions { margin-top: 16px; } .voice-footer { display: none; } #status { margin-top: 10px; } }
+  @media (max-height: 500px) and (min-width: 600px) { .dock-heading span, .dock-note { display: none; } .dock-heading { margin-bottom: 8px; } .dock-heading h2 { font-size: .85rem; } .mini-surface { aspect-ratio: 16 / 9; } .mini-copy { padding: 10px; gap: 6px; } .mini-copy strong { font-size: .8rem; } .mini-copy small { font-size: .7rem; } .mini-copy .icon { width: 18px; } }
+  @media (max-height: 620px) { .talk-heading { display: none; } }
+  html[data-large="true"] #subtitle-window { --caption-line: 34px; font-size: 23px; }
+  @media (forced-colors: active) { #talk, .panel, .list, .record, .chip, a.action { border: 2px solid ButtonText; } .orb-scene, #memory-shine { visibility: hidden; } .wordmark { background-color: CanvasText; } }
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to Pam</a>
+<div id="memory-shine" aria-hidden="true"></div>
+<div class="sr-only" id="memory-announcement" role="status" aria-live="polite"></div>
+<svg class="icon-definitions" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>
+  <symbol id="icon-features" viewBox="0 0 24 24"><path d="M4 5a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v4a1 1 0 0 1 -1 1h-4a1 1 0 0 1 -1 -1l0 -4"/><path d="M14 5a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v4a1 1 0 0 1 -1 1h-4a1 1 0 0 1 -1 -1l0 -4"/><path d="M4 15a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v4a1 1 0 0 1 -1 1h-4a1 1 0 0 1 -1 -1l0 -4"/><path d="M14 15a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v4a1 1 0 0 1 -1 1h-4a1 1 0 0 1 -1 -1l0 -4"/></symbol>
+  <symbol id="icon-expand" viewBox="0 0 24 24"><path d="M4 8v-2a2 2 0 0 1 2 -2h2M4 16v2a2 2 0 0 0 2 2h2M16 4h2a2 2 0 0 1 2 2v2M16 20h2a2 2 0 0 0 2 -2v-2"/></symbol>
+  <symbol id="icon-camera" viewBox="0 0 24 24"><path d="M5 7h1a2 2 0 0 0 2 -2a1 1 0 0 1 1 -1h6a1 1 0 0 1 1 1a2 2 0 0 0 2 2h1a2 2 0 0 1 2 2v9a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-9a2 2 0 0 1 2 -2"/><path d="M9 13a3 3 0 1 0 6 0a3 3 0 0 0 -6 0"/></symbol>
+</defs></svg>
+<header class="topbar">
+  <div class="topbar-inner">
+    <span class="wordmark" role="img" aria-label="Pam"></span>
+    <div class="topbar-actions">
+      <button id="caregiver" class="chip" aria-label="Contact my caregiver">Get help</button>
+      <details class="settings">
+        <summary aria-label="Reading options">Aa</summary>
+        <div class="settings-panel">
+          <h2>Reading options</h2>
+          <label>Larger text<input type="checkbox" id="large-text"></label>
+          <label>Higher contrast<input type="checkbox" id="high-contrast"></label>
+          <label>Pause visual motion<input type="checkbox" id="reduce-effects"></label>
+          <p>Your device's reduced-motion setting is always respected.</p>
+        </div>
+      </details>
+    </div>
+  </div>
+</header>
+<div class="workspace">
+<main id="main" tabindex="-1">
+  <section id="view-talk" class="col" role="tabpanel" aria-labelledby="tab-talk" tabindex="0">
+    <div class="talk-heading"><h1 id="greeting" class="display">Hello. I'm Pam.</h1><p class="intro">A little support, at your pace.</p></div>
+    <div class="voice-panel">
+      <div class="stage">
+        <div class="visual-zone" aria-hidden="true">
+          <div class="orb-scene"><div class="orb-ring" id="orb-ring"></div><div class="orb-fallback" id="orb-fallback"></div><canvas id="voice-orb"></canvas></div>
+        </div>
+        <p class="voice-state" id="voice-state">Ready when you are</p>
+        <div class="subtitle-area">
+          <p id="subtitle-placeholder">What's on your mind? I'm here to help.</p>
+          <div id="subtitle-window" role="region" aria-label="Pam's live subtitles" hidden><p id="subtitle-text"></p></div>
+        </div>
+      </div>
+      <div class="actions">
+        <button id="features-open" aria-label="Explore Pam's features" aria-haspopup="dialog" aria-controls="features-dialog"><svg class="icon" aria-hidden="true"><use href="#icon-features"/></svg><span>Features</span></button>
+        <button id="talk" aria-pressed="false" aria-describedby="status">Talk to Pam</button>
+        <button id="mic-toggle" aria-pressed="false" hidden>Mute</button>
+        <span class="sr-only">Voice connection: <span id="conn">offline</span></span>
+      </div>
+      <p id="status" role="status" aria-live="polite" aria-atomic="true">Tap Talk to Pam, then speak naturally.</p>
+    </div>
+    <div class="voice-footer"><span id="memory-peek-detail" class="new-memory-note">One thing at a time.</span><button id="transcript-open" aria-haspopup="dialog" aria-controls="transcript-dialog">Conversation</button></div>
+    <div class="response-area">
+      <div class="result-heading"><span>Your result</span><button id="result-close" aria-label="Dismiss this result">Close</button></div>
+      <div id="card" role="region" aria-label="Pam's answer" tabindex="-1"><div class="title"></div><div class="body"></div><img alt="" style="display:none"><a class="action" style="display:none"></a><a class="action secondary" style="display:none"></a></div>
+      <div id="photo"><img alt=""><div class="cap"></div></div>
+    </div>
+  </section>
+  <section class="col" id="view-memories" role="tabpanel" aria-labelledby="tab-memories" tabindex="0" hidden>
+    <div class="view-heading"><h2 class="display">Memories</h2><p class="lead">Where Pam last saw your things.</p></div>
+    <div id="memory-note" class="record" role="region" aria-label="Latest saved memory">
+      <div>
+        <strong id="memory-title">No memories yet</strong>
+        <p id="memory-detail">Turn on the camera and Pam will note where things are put down.</p>
+        <time id="memory-time"></time>
+      </div>
+    </div>
+    <p class="feed-state" id="feed-state">Connecting to memory updates…</p>
+    <label class="search-field" for="memory-search">Search memories<input id="memory-search" type="search" placeholder="Keys, glasses, pill bottle" autocomplete="off"></label>
+    <ul id="memory-history"><li>Saved observations will appear here.</li></ul>
+  </section>
+  <section class="col" id="view-camera" role="tabpanel" aria-labelledby="tab-camera" tabindex="0" hidden>
+    <div class="view-heading"><h2 class="display">Camera</h2><p class="lead">Lets Pam see where things are put down. You are always in control.</p></div>
+    <div class="panel">
+      <h3 id="camera-heading">Status</h3>
+      <p id="cam" role="status" aria-live="polite">Camera is off.</p>
+      <div class="camera-controls"><button id="camera-start">Start camera</button><button id="camera-stop" hidden>Stop camera</button></div>
+      <details id="camera-details" open><summary>Preview and tips</summary>
+        <button id="camera-open" aria-haspopup="dialog" aria-controls="camera-dialog">Expand camera preview</button>
+        <p class="privacy">Point the camera at the table or the things you want Pam to remember, and keep this page open.</p>
+        <p class="privacy">If it cannot connect, ask your helper to start the memory pipeline on the laptop.</p>
+      </details>
+      <p class="privacy">Camera frames go to your laptop. Selected images are sent to the AI service to create memories.</p>
+    </div>
+  </section>
+  <div id="demo"></div>
+</main>
+<aside class="camera-dock" aria-label="Persistent camera preview">
+  <div class="dock-heading"><h2>Your camera</h2><span>You control what's on</span></div>
+  <button id="camera-peek" aria-label="Expand camera preview" aria-haspopup="dialog" aria-controls="camera-dialog">
+    <span class="mini-surface">
+      <video id="camera-preview" playsinline muted autoplay aria-label="Live camera preview" hidden></video>
+      <span id="mini-camera-empty" class="camera-placeholder"><svg class="icon" aria-hidden="true"><use href="#icon-camera"/></svg><span>Camera off</span></span>
+    </span>
+    <span class="mini-copy"><span><strong id="mini-camera-title">Camera is off</strong><small id="mini-camera-status">Tap to open camera controls</small></span><svg class="icon" aria-hidden="true"><use href="#icon-expand"/></svg></span>
+  </button>
+  <p class="dock-note">A small view of what Pam can see. Tap to take a closer look.</p>
+</aside>
+</div>
+<dialog id="features-dialog" aria-labelledby="features-title">
+  <div class="dialog-head"><h2 id="features-title">How Pam can help</h2><button class="dialog-close" data-close="features-dialog">Close</button></div>
+  <div class="dialog-body">
+    <div class="feature-welcome"><div><h3 class="display">A little help.<br>A lighter day.</h3><p>Ask in your own words. Pam takes things one step at a time.</p></div><img src="/assets/elder-companions.svg" alt="An older couple sitting together" width="180" height="120"></div>
+    <label class="search-field" for="feature-search">Find a feature<input id="feature-search" type="search" placeholder="Try weather or reminders" autocomplete="off"></label>
+    <ul id="capability-list" class="capability-list"></ul><p id="feature-empty" class="privacy" hidden>No matching features. Try another word.</p>
+    <button id="features-transcript" class="chip" style="margin-top:20px">View conversation history</button>
+    <p class="privacy">Some features need a connected calendar, saved contacts, family photos, or robot. Calls, messages and rides may open another app for you to confirm.</p>
+  </div>
+</dialog>
+<dialog id="camera-dialog" aria-labelledby="camera-dialog-title">
+  <div class="dialog-head"><h2 id="camera-dialog-title">Your camera</h2><button class="dialog-close" data-close="camera-dialog">Close</button></div>
+  <div class="dialog-body">
+    <video id="camera-expanded" playsinline muted autoplay aria-label="Expanded live camera preview" hidden></video>
+    <div id="camera-expanded-empty"><svg class="icon" aria-hidden="true"><use href="#icon-camera"/></svg><p>Your camera is off.</p><p class="privacy">Turn it on when you're ready. You can stop it at any time.</p></div>
+    <p id="camera-expanded-status" role="status">Camera is off.</p>
+    <div class="camera-controls"><button id="camera-dialog-start">Start camera</button><button id="camera-dialog-stop" hidden>Stop camera</button></div>
+    <p class="privacy">Camera frames go to your laptop. Selected images are sent to the AI service to create memories.</p>
+  </div>
+</dialog>
+<dialog id="transcript-dialog" aria-labelledby="transcript-title">
+  <div class="dialog-head"><h2 id="transcript-title">Your conversation</h2><button class="dialog-close" data-close="transcript-dialog">Close</button></div>
+  <div class="dialog-body"><div id="log" role="log" aria-live="polite" aria-relevant="additions"></div></div>
+</dialog>
+<div id="subtitle-announcement" class="sr-only" role="status" aria-live="polite"></div>
+<nav class="bottom-nav" aria-label="Pam views">
+  <div class="tabs" role="tablist">
+    <button id="tab-talk" role="tab" aria-selected="true" aria-controls="view-talk" data-view="talk">Talk</button>
+    <button id="tab-memories" role="tab" aria-selected="false" aria-controls="view-memories" tabindex="-1" data-view="memories">Memories</button>
+    <button id="tab-camera" role="tab" aria-selected="false" aria-controls="view-camera" tabindex="-1" data-view="camera">Camera<span class="camera-badge" id="camera-badge">Off</span></button>
+  </div>
+</nav>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const els = { talk: $("talk"), status: $("status"), conn: $("conn"), card: $("card"),
+              photo: $("photo"), log: $("log"), demo: $("demo"), cam: $("cam") };
+const DG_URL = "wss://agent.deepgram.com/v1/agent/converse";
+// ?dg=ws://127.0.0.1:8000/api/fake-dg tests the whole client path against the
+// server's fake agent — no API key needed.
+const DG_OVERRIDE = new URLSearchParams(location.search).get("dg");
+
+let ws = null, mic = null, player = null, running = false, wakeLock = null;
+let starting = false, voiceTimeout = null;
+let currentView = "talk", voiceState = "idle", voiceVisual = null, micMuted = false;
+let captionNewTurn = true, captionSegments = [], functionRenderId = 0;
+
+function fitCaptions() {
+  const viewport = $("subtitle-window");
+  viewport.scrollTop = viewport.scrollHeight;
+}
+function appendCaption(content) {
+  const text = String(content || "").trim();
+  if (!text) return;
+  if (captionNewTurn) { captionSegments = []; captionNewTurn = false; }
+  const previous = captionSegments.at(-1);
+  if (text === previous) return;
+  if (previous && text.startsWith(previous)) captionSegments[captionSegments.length - 1] = text;
+  else captionSegments.push(text);
+  captionSegments = captionSegments.slice(-32);
+  $("subtitle-text").textContent = captionSegments.join(" ").slice(-8000);
+  $("subtitle-placeholder").hidden = true;
+  $("subtitle-window").hidden = false;
+  document.body.classList.add("has-captions");
+  $("subtitle-announcement").textContent = text;
+  fitCaptions();
+  requestAnimationFrame(fitCaptions);
+}
+function resetCaptions() {
+  captionNewTurn = true; captionSegments = [];
+  $("subtitle-text").textContent = "";
+  $("subtitle-window").hidden = true;
+  $("subtitle-placeholder").hidden = false;
+  document.body.classList.remove("has-captions");
+}
+const captionResize = new ResizeObserver(fitCaptions);
+captionResize.observe($("subtitle-window"));
+
+function openDialog(id, trigger) {
+  const dialog = $(id);
+  dialog.returnFocus = trigger;
+  if (!dialog.open) dialog.showModal();
+}
+for (const button of document.querySelectorAll("[data-close]")) button.onclick = () => $(button.dataset.close).close();
+for (const dialog of document.querySelectorAll("dialog")) {
+  dialog.addEventListener("close", () => dialog.returnFocus?.focus({ preventScroll: true }));
+  dialog.addEventListener("click", event => {
+    const rect = dialog.getBoundingClientRect();
+    if (event.target === dialog && (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom)) dialog.close();
+  });
+}
+$("features-open").onclick = () => openDialog("features-dialog", $("features-open"));
+$("transcript-open").onclick = () => openDialog("transcript-dialog", $("transcript-open"));
+$("features-transcript").onclick = () => { $("features-dialog").close(); openDialog("transcript-dialog", $("features-open")); };
+const CAPABILITIES = [
+  ["find_object", "Find your belongings", "Look up where Pam last saw something and show its saved photo.", "Where did I leave my glasses?"],
+  ["get_schedule", "Check your calendar", "Read today's events from your connected calendar.", "What do I have planned today?"],
+  ["get_reminders", "Read your reminders", "Hear the reminders you've already saved.", "What are my reminders?"],
+  ["set_reminder", "Set a reminder", "Save a reminder. Spoken alerts need Pam to stay open and connected.", "Remind me to call Sarah in ten minutes."],
+  ["get_time_and_place", "Know the day and where you are", "Hear today's date, the time, where you are, and what is next.", "What day is it? Where am I?"],
+  ["check_pills_taken", "Check on your pills", "Hear what is recorded about your pills. Pam cannot see whether you took them, so she only reports what you told her.", "Did I take my pills?"],
+  ["get_weather", "Check the weather", "Get the current weather for your saved home location.", "What's the weather like?"],
+  ["call_contact", "Call someone", "Prepare a call to a saved contact using your phone or a connected calling service.", "Help me call Sarah."],
+  ["call_caregiver", "Reach your caregiver", "Get help contacting the caregiver saved in Pam.", "I'd like to call my caregiver."],
+  ["send_message", "Write a message", "Prepare a message to a saved contact. Sending depends on your phone or messaging service.", "Help me text Sarah that I'm home."],
+  ["request_ride", "Prepare a ride", "Open a ride to a saved destination. You confirm the booking in Uber.", "Help me get a ride to the airport."],
+  ["show_photo", "See a familiar face", "Show family photos that your helper has added to Pam.", "Show me a photo of Sarah."],
+  ["search_flights", "Look for a flight", "Open flight-search options. Pam does not buy tickets.", "Find flights to New York."],
+  ["fetch_object", "Retrieve an item", "Ask a connected robot for help. This needs the robot service and setup.", "Can the robot bring my medicine?"],
+  ["guide_me", "Take it step by step", "Talk through an everyday task one step at a time, at your pace.", "Help me make a cup of tea."]
+];
+for (const [name, title, description, example] of CAPABILITIES) {
+  const item = document.createElement("li"); item.dataset.capability = name;
+  const heading = document.createElement("h3"), body = document.createElement("p"), hint = document.createElement("span");
+  heading.textContent = title; body.textContent = description; hint.className = "feature-example"; hint.textContent = `“${example}”`;
+  item.append(heading, body, hint); $("capability-list").append(item);
+}
+$("feature-search").oninput = () => {
+  const query = $("feature-search").value.trim().toLowerCase();
+  let count = 0;
+  for (const item of $("capability-list").children) { item.hidden = !item.textContent.toLowerCase().includes(query); if (!item.hidden) count++; }
+  $("feature-empty").hidden = count > 0;
+};
+
+function selectView(view, animate = false) {
+  if (!["talk", "memories", "camera"].includes(view)) return;
+  currentView = view;
+  for (const tab of document.querySelectorAll("[data-view]")) {
+    const selected = tab.dataset.view === view;
+    tab.setAttribute("aria-selected", String(selected));
+    tab.tabIndex = selected ? 0 : -1;
+    const panel = $(tab.getAttribute("aria-controls"));
+    panel.hidden = !selected;
+    panel.classList.toggle("view-enter", selected && animate);
+  }
+  $("tab-" + view).removeAttribute("data-new");
+  $("tab-" + view).removeAttribute("aria-label");
+  voiceVisual?.refresh();
+  $("main").scrollTo({ top: 0, behavior: "instant" });
+  fitCaptions();
+}
+for (const tab of document.querySelectorAll("[data-view]")) {
+  tab.onclick = event => selectView(tab.dataset.view, event.detail > 0);
+  tab.onkeydown = event => {
+    const tabs = [...document.querySelectorAll("[data-view]")];
+    let index = tabs.indexOf(tab);
+    if (event.key === "ArrowRight") index = (index + 1) % tabs.length;
+    else if (event.key === "ArrowLeft") index = (index + tabs.length - 1) % tabs.length;
+    else if (event.key === "Home") index = 0;
+    else if (event.key === "End") index = tabs.length - 1;
+    else return;
+    event.preventDefault();
+    selectView(tabs[index].dataset.view);
+    tabs[index].focus();
+  };
+}
+document.addEventListener("keydown", event => {
+  if (event.key !== "Escape") return;
+  const dialog = document.querySelector("dialog[open]");
+  if (dialog) { event.preventDefault(); dialog.close(); }
+  else document.querySelector(".settings").open = false;
+});
+
+function setVoiceState(state) {
+  const label = ({ idle: "Ready when you are", connecting: "Connecting to Pam", listening: micMuted ? "Microphone paused" : "Listening to you", thinking: "Thinking with you", speaking: "Pam is speaking" })[state];
+  if (voiceState === state && $("voice-state").textContent === label) return;
+  voiceState = state;
+  document.body.dataset.voice = state;
+  $("voice-state").textContent = label;
+  voiceVisual?.refresh();
+}
+
+function createVoiceVisual() {
+  const canvas = $("voice-orb"), fallback = $("orb-fallback"), scene = canvas.parentElement;
+  const reduce = matchMedia("(prefers-reduced-motion: reduce)");
+  const samples = new Float32Array(256);
+  let renderer = null, raf = 0, last = 0, clock = 0, level = 0, inView = true, disposed = false;
+  let pointer = [0, 0], target = [0, 0];
+  const vertex = `attribute vec2 position; varying vec2 uv; void main() { uv = position; gl_Position = vec4(position, 0.0, 1.0); }`;
+  const fragment = `
+    #extension GL_OES_standard_derivatives : enable
+    precision highp float;
+    varying vec2 uv;
+    uniform float uTime, uLevel, uMode, uAspect;
+    uniform vec2 uPointer;
+    void main() {
+      // A single smooth glass sphere. The only motion is a slow breathe plus a
+      // gentle swell driven by the live audio level, so it stays calm and legible.
+      vec2 screen = uv; screen.x *= uAspect;
+      float radius = .78 + .025 * sin(uTime * .9) + uLevel * .13;
+      float d = length(screen);
+      float edge = fwidth(d) * 1.5;
+      float body = 1.0 - smoothstep(radius - edge, radius + edge, d);
+      if (body <= 0.0) { gl_FragColor = vec4(0.0); return; }
+      vec3 n = vec3(screen / radius, sqrt(max(0.0, 1.0 - dot(screen / radius, screen / radius))));
+      vec3 light = normalize(vec3(-.55 + uPointer.x * .3, .85 - uPointer.y * .3, .9));
+      float diffuse = max(0.0, dot(n, light));
+      float rim = pow(1.0 - n.z, 2.2);
+      float gloss = pow(max(0.0, dot(reflect(-light, n), vec3(0.0, 0.0, 1.0))), 60.0);
+      vec3 deep = vec3(.12, .42, .70);
+      vec3 sky = vec3(.55, .78, .95);
+      vec3 pearl = vec3(.97, .99, 1.0);
+      vec3 color = mix(deep, sky, smoothstep(-.2, .9, n.y * .6 + n.x * -.35 + diffuse * .5));
+      color = mix(color, pearl, smoothstep(.55, 1.0, diffuse) * .6);
+      color += rim * vec3(.38, .62, .85) * .5 + gloss * .5;
+      color = mix(color, color * vec3(.92, 1.0, 1.05), step(2.5, uMode) * .2);
+      gl_FragColor = vec4(clamp(color, 0.0, 1.0), body);
+    }`;
+  function setup() {
+    const gl = canvas.getContext("webgl", { alpha: true, antialias: false, premultipliedAlpha: false, powerPreference: "low-power" });
+    if (!gl || !gl.getExtension("OES_standard_derivatives")) return null;
+    const shaders = [];
+    let program = null, buffer = null;
+    try {
+      for (const [type, source] of [[gl.VERTEX_SHADER, vertex], [gl.FRAGMENT_SHADER, fragment]]) {
+        const shader = gl.createShader(type);
+        shaders.push(shader);
+        gl.shaderSource(shader, source); gl.compileShader(shader);
+        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) throw new Error("Shader unavailable");
+      }
+      program = gl.createProgram();
+      shaders.forEach(shader => gl.attachShader(program, shader));
+      gl.linkProgram(program);
+      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error("Renderer unavailable");
+      gl.useProgram(program);
+      buffer = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]), gl.STATIC_DRAW);
+      const position = gl.getAttribLocation(program, "position");
+      gl.enableVertexAttribArray(position); gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0);
+      const uniforms = Object.fromEntries(["uTime", "uLevel", "uMode", "uAspect", "uPointer"].map(name => [name, gl.getUniformLocation(program, name)]));
+      shaders.forEach(shader => gl.deleteShader(shader));
+      canvas.dataset.renderer = "webgl";
+      fallback.hidden = true;
+      return { draw(time, energy) {
+        const scale = Math.min(devicePixelRatio || 1, 1.25);
+        const width = Math.max(1, Math.min(420, Math.round(canvas.clientWidth * scale)));
+        const height = Math.max(1, Math.min(420, Math.round(canvas.clientHeight * scale)));
+        if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; }
+        gl.viewport(0, 0, width, height);
+        gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+        gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+        gl.uniform1f(uniforms.uTime, time); gl.uniform1f(uniforms.uLevel, energy);
+        gl.uniform1f(uniforms.uMode, ({idle:0, connecting:2, listening:1, thinking:2, speaking:3})[voiceState]);
+        gl.uniform1f(uniforms.uAspect, canvas.clientWidth / Math.max(canvas.clientHeight, 1));
+        gl.uniform2f(uniforms.uPointer, pointer[0], pointer[1]);
+        gl.drawArrays(gl.TRIANGLES, 0, 6);
+      }, dispose() { gl.deleteBuffer(buffer); gl.deleteProgram(program); } };
+    } catch {
+      shaders.forEach(shader => gl.deleteShader(shader));
+      if (buffer) gl.deleteBuffer(buffer);
+      if (program) gl.deleteProgram(program);
+      return null;
+    }
+  }
+  function motionAllowed() { return voiceState !== "idle" && !reduce.matches && document.documentElement.dataset.effects !== "off"; }
+  function sample() {
+    const analyser = player?.active ? player.analyser : running && !micMuted ? mic?.analyser : null;
+    let energy = 0;
+    if (analyser) {
+      analyser.getFloatTimeDomainData(samples);
+      for (const value of samples) energy += value * value;
+      energy = Math.min(1, Math.sqrt(energy / samples.length) * 5);
+    }
+    level += (energy - level) * (energy > level ? .38 : .14);
+  }
+  const ring = $("orb-ring");
+  function draw(time) {
+    if (renderer) renderer.draw(time, motionAllowed() ? level : 0);
+    else fallback.style.transform = motionAllowed() ? `scale(${1 + level * .1 + .012 * Math.sin(time * .9)})` : "none";
+    // The live ring is the only thing on the page that moves: it swells with
+    // whoever is speaking, and stays still when motion is reduced.
+    ring.style.transform = motionAllowed() ? `scale(${1 + level * .04})` : "none";
+  }
+  function tick(now) {
+    raf = 0;
+    if (disposed || !motionAllowed() || document.hidden || !inView || currentView !== "talk") return;
+    if (now - last >= 1000 / 30) {
+      clock += Math.min((now - last) / 1000, .06); last = now;
+      sample();
+      pointer = pointer.map((value, i) => value + (target[i] - value) * .07);
+      draw(clock);
+    }
+    raf = requestAnimationFrame(tick);
+  }
+  function refresh() {
+    if (disposed) return;
+    cancelAnimationFrame(raf); raf = 0;
+    if (currentView !== "talk" || document.hidden || !inView) return;
+    draw(motionAllowed() ? clock : 0);
+    if (motionAllowed()) { last = performance.now(); raf = requestAnimationFrame(tick); }
+  }
+  function moved(event) {
+    if (event.pointerType !== "mouse" || !motionAllowed()) return;
+    const rect = scene.getBoundingClientRect();
+    target = [(event.clientX - rect.left) / rect.width - .5, (event.clientY - rect.top) / rect.height - .5];
+  }
+  scene.addEventListener("pointermove", moved);
+  scene.addEventListener("pointerleave", () => { target = [0, 0]; });
+  canvas.addEventListener("webglcontextlost", event => { event.preventDefault(); renderer = null; fallback.hidden = false; canvas.dataset.renderer = "fallback"; refresh(); });
+  canvas.addEventListener("webglcontextrestored", () => { renderer = setup(); refresh(); });
+  renderer = setup();
+  if (!renderer) canvas.dataset.renderer = "fallback";
+  const observer = new IntersectionObserver(entries => { inView = entries[0].isIntersecting; refresh(); });
+  observer.observe(scene);
+  const resize = new ResizeObserver(refresh); resize.observe(scene);
+  document.addEventListener("visibilitychange", refresh);
+  reduce.addEventListener("change", refresh);
+  refresh();
+  return { refresh, get level() { return level; }, get animating() { return !!raf; },
+    dispose() { disposed = true; cancelAnimationFrame(raf); observer.disconnect(); resize.disconnect(); renderer?.dispose(); document.removeEventListener("visibilitychange", refresh); reduce.removeEventListener("change", refresh); scene.removeEventListener("pointermove", moved); } };
+}
+
+// ---------------------------------------------------------------------------
+// Microphone: getUserMedia -> AudioWorklet -> Int16 PCM frames -> ws.send
+// ---------------------------------------------------------------------------
+const WORKLET = `
+class PCM extends AudioWorkletProcessor {
+  process(inputs) {
+    const ch = inputs[0] && inputs[0][0];
+    if (ch) { const b = new Int16Array(ch.length);
+      for (let i = 0; i < ch.length; i++) b[i] = Math.max(-1, Math.min(1, ch[i])) * 32767;
+      this.port.postMessage(b.buffer, [b.buffer]); }
+    return true;
+  }
+}
+registerProcessor("pcm", PCM);`;
+
+async function startMic() {
+  const stream = await navigator.mediaDevices.getUserMedia({
+    audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+  const ctx = new AudioContext({ sampleRate: 16000 });
+  const url = URL.createObjectURL(new Blob([WORKLET], { type: "application/javascript" }));
+  try {
+    await ctx.audioWorklet.addModule(url);
+    await ctx.resume();
+    const node = new AudioWorkletNode(ctx, "pcm");
+    node.port.onmessage = (e) => { if (running && ws?.readyState === WebSocket.OPEN && ws.bufferedAmount < 65536) ws.send(e.data); };
+    const analyser = ctx.createAnalyser(); analyser.fftSize = 256;
+    ctx.createMediaStreamSource(stream).connect(analyser);
+    analyser.connect(node);
+    node.connect(ctx.destination);
+    return { ctx, stream, node, analyser };
+  } catch (e) {
+    stream.getTracks().forEach(t => t.stop());
+    await ctx.close();
+    throw e;
+  } finally { URL.revokeObjectURL(url); }
+}
+
+// ---------------------------------------------------------------------------
+// Playback: incoming linear16 @24k chunks -> Float32 -> scheduled AudioBuffers.
+// ---------------------------------------------------------------------------
+function makePlayer() {
+  const ctx = new AudioContext({ sampleRate: 24000 });
+  const analyser = ctx.createAnalyser(); analyser.fftSize = 256;
+  analyser.connect(ctx.destination);
+  let at = 0, sources = [];
+  return {
+    ctx, analyser,
+    get active() { return sources.length > 0; },
+    play(buf) {
+      const pcm = new Int16Array(buf);
+      if (!pcm.length) return;
+      const f = new Float32Array(pcm.length);
+      for (let i = 0; i < pcm.length; i++) f[i] = pcm[i] / 32768;
+      const ab = ctx.createBuffer(1, f.length, 24000);
+      ab.copyToChannel(f, 0);
+      const src = ctx.createBufferSource();
+      src.buffer = ab; src.connect(analyser);
+      at = Math.max(at, ctx.currentTime);
+      src.start(at); at += ab.duration; sources.push(src);
+      if (voiceState !== "speaking" && running) say("Pam is speaking. You can speak to interrupt.");
+      setVoiceState("speaking");
+      src.onended = () => {
+        sources = sources.filter(s => s !== src);
+        if (!sources.length && voiceState === "speaking") {
+          setVoiceState(running ? "listening" : "idle");
+          if (running) say(micMuted ? "Your microphone is paused. Tap Unmute to speak." : "I'm listening. Take your time.");
+        }
+      };
+    },
+    stop() { sources.forEach(s => { try { s.stop(); } catch {} }); sources = []; at = 0; setVoiceState(running ? "listening" : "idle"); },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Camera: same wire format as index.html -- one JPEG per binary WS message to
+// the perception relay. Kept in this file rather than shared with index.html so
+// that page stays a standalone, dependency-free fallback for debugging the
+// camera on its own.
+//
+// It rides the SAME user gesture as the Talk button (getUserMedia needs one),
+// but it is deliberately NOT stopped when the voice session stops: this is a
+// memory device, and it has to keep seeing put-downs between conversations.
+// ---------------------------------------------------------------------------
+const CAM = { fps: 10, height: 720, quality: 0.7, maxBuffered: 256 * 1024 };
+const CAM_URL = `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/api/camera`;
+
+let camStream = null, camSocket = null, camTimer = null, camVideo = null;
+let camSent = 0, camSkipped = 0, camStart = 0;
+let camRetry = null, camAttempts = 0, camBusy = false, camStarting = false, camGeneration = 0;
+const camCanvas = document.createElement("canvas");
+const camCtx = camCanvas.getContext("2d", { alpha: false });
+
+function camSay(msg, cls = "") {
+  els.cam.textContent = msg; els.cam.className = cls;
+  const badge = $("camera-badge");
+  badge.textContent = cls === "on" ? "Live" : cls === "err" ? "Check" : camStream ? "Connecting" : "Off";
+  badge.className = "camera-badge " + cls;
+  syncCameraUI();
+}
+
+function syncCameraUI() {
+  const active = !!camStream?.getVideoTracks().some(track => track.readyState === "live");
+  $("camera-preview").hidden = !active;
+  $("mini-camera-empty").hidden = active;
+  $("mini-camera-title").textContent = active ? "Live camera" : camStarting ? "Starting camera…" : "Camera is off";
+  $("mini-camera-status").textContent = active ? (els.cam.className === "on" ? "Connected to memory" : "Preview only. Check connection.") : "Tap to open camera controls";
+  $("camera-expanded-status").textContent = els.cam.textContent;
+  $("camera-expanded-empty").hidden = active;
+  $("camera-expanded").hidden = !active;
+  $("camera-dialog-start").hidden = active && els.cam.className === "on";
+  $("camera-dialog-start").disabled = camStarting;
+  $("camera-dialog-start").textContent = active ? "Retry connection" : "Start camera";
+  $("camera-dialog-stop").hidden = !active;
+  const expanded = $("camera-expanded");
+  if ($("camera-dialog").open && active && expanded.srcObject !== camStream) {
+    expanded.srcObject = camStream;
+    expanded.play().catch(() => { $("camera-expanded-status").textContent = "The expanded preview could not play. Close it and try again."; });
+  } else if (!active) { expanded.pause(); expanded.srcObject = null; }
+}
+function expandCamera(trigger) {
+  openDialog("camera-dialog", trigger);
+  syncCameraUI();
+}
+$("camera-peek").onclick = () => expandCamera($("camera-peek"));
+$("camera-open").onclick = () => expandCamera($("camera-open"));
+$("camera-dialog").addEventListener("close", () => { $("camera-expanded").pause(); $("camera-expanded").srcObject = null; });
+$("camera-dialog-start").onclick = startCamera;
+$("camera-dialog-stop").onclick = stopCamera;
+
+async function camSendFrame() {
+  if (camBusy || !camSocket || camSocket.readyState !== WebSocket.OPEN || !camVideo?.videoWidth) return;
+  // Backpressure: drop rather than deepen the queue, so "live" stays live.
+  if (camSocket.bufferedAmount > CAM.maxBuffered) { camSkipped++; return; }
+  const scale = CAM.height / camVideo.videoHeight;
+  const w = Math.round(camVideo.videoWidth * scale), h = CAM.height;
+  if (camCanvas.width !== w || camCanvas.height !== h) { camCanvas.width = w; camCanvas.height = h; }
+  camCtx.drawImage(camVideo, 0, 0, w, h);
+  const sock = camSocket;
+  camBusy = true;
+  try {
+    const blob = await new Promise((r) => camCanvas.toBlob(r, "image/jpeg", CAM.quality));
+    if (!blob) return;
+    const buffer = await blob.arrayBuffer();
+    if (sock !== camSocket || sock.readyState !== WebSocket.OPEN) return;
+    sock.send(buffer);
+    camSent++;
+  } finally { camBusy = false; }
+}
+
+async function startCamera() {
+  if (camTimer || camStarting) return;          // already running: leave it alone
+  if (camStream) { connectCamera(); return; }
+  const generation = ++camGeneration;
+  camStarting = true;
+  $("camera-start").disabled = true;
+  try {
+    if (!navigator.mediaDevices?.getUserMedia) throw new Error("Open Pam using HTTPS on your phone, or localhost on your laptop.");
+    camSay("Waiting for camera permission…");
+    // "environment" = the rear camera, the one aimed at the table, not the face.
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } },
+      audio: false,
+    });
+    if (generation !== camGeneration) { stream.getTracks().forEach(t => t.stop()); return; }
+    camStream = stream;
+    camVideo = $("camera-preview");
+    camVideo.hidden = false;
+    camVideo.playsInline = true; camVideo.muted = true; camVideo.srcObject = camStream;
+    camStream.getVideoTracks()[0].onended = () => { stopCamera(); camSay("Camera access ended. Tap Start camera to try again.", "err"); };
+    await camVideo.play();
+    if (generation !== camGeneration) return;
+    $("camera-stop").hidden = false;
+    connectCamera();
+  } catch (e) {
+    stopCamera();
+    camSay(e.name === "NotAllowedError" ? "Camera permission is blocked. Allow Camera in your browser's site settings, then try again."
+      : e.name === "NotFoundError" ? "No camera was found on this device. You can still talk to Pam."
+      : e.name === "NotReadableError" ? "Another app may be using the camera. Close it, then try again."
+      : (e.message || "The camera could not start. Please try again."), "err");
+  } finally {
+    camStarting = false;
+    $("camera-start").disabled = false;
+    syncCameraUI();
+  }
+}
+
+function connectCamera() {
+  clearTimeout(camRetry);
+  if (!camStream || (camSocket && camSocket.readyState < WebSocket.CLOSING)) return;
+  camSay("Camera is on. Connecting to memory…");
+  $("camera-start").textContent = "Retry connection";
+  const sock = camSocket = new WebSocket(CAM_URL);
+  let reason = "", ready = false, retryAllowed = true, lastAck = performance.now();
+  const timeout = setTimeout(() => { if (sock === camSocket && !ready) sock.close(); }, 7000);
+  sock.onmessage = (e) => {
+    if (sock !== camSocket) return;
+    const message = JSON.parse(e.data);
+    if (message.type === "camera_ready") {
+      clearTimeout(timeout);
+      ready = true;
+      camSent = camSkipped = 0; camStart = performance.now();
+      camSay("Connected. Sending the first camera image…");
+      camTimer = setInterval(() => {
+        if (performance.now() - lastAck > 12000) {
+          reason = "Camera images stopped reaching the laptop. Reconnecting…";
+          sock.close();
+        } else camSendFrame().catch(() => { reason = "Camera capture paused. Reconnecting…"; sock.close(); });
+      }, 1000 / CAM.fps);
+    } else if (message.type === "frame_received") {
+      lastAck = performance.now();
+      camAttempts = 0;
+      $("camera-start").hidden = true;
+      camSay("Camera connected. Images are reaching your laptop.", "on");
+    } else if (message.type === "camera_error") {
+      reason = message.message;
+      retryAllowed = message.retry !== false;
+      camSay(reason, "err");
+    }
+  };
+  // The usual cause is the relay not running, or its self-signed certificate
+  // never having been accepted on this phone. Say both, because the browser
+  // reports an opaque failure either way.
+  sock.onerror = () => { reason ||= "Pam's server cannot be reached. Check your connection. Retrying automatically."; };
+  sock.onclose = () => {
+    clearTimeout(timeout);
+    if (sock !== camSocket) return;
+    clearInterval(camTimer); camTimer = null; camSocket = null;
+    $("camera-start").hidden = false;
+    camSay(reason || "Camera connection interrupted. Retrying automatically…", "err");
+    if (camStream && retryAllowed) camRetry = setTimeout(connectCamera, Math.min(30000, 2000 * 2 ** Math.min(camAttempts++, 4)));
+  };
+}
+
+function stopCamera() {
+  camGeneration++;
+  clearTimeout(camRetry); camRetry = null; camAttempts = 0;
+  clearInterval(camTimer); camTimer = null;
+  if (camSocket) { camSocket.onclose = camSocket.onmessage = camSocket.onerror = null; camSocket.close(); camSocket = null; }
+  if (camStream) { camStream.getTracks().forEach((t) => { t.onended = null; t.stop(); }); camStream = null; }
+  if (camVideo) { camVideo.srcObject = null; camVideo.hidden = true; }
+  camVideo = null;
+  $("camera-start").hidden = false;
+  $("camera-start").textContent = "Start camera";
+  $("camera-stop").hidden = true;
+  camSay("Camera is off. You can still talk to Pam.");
+}
+
+$("camera-start").onclick = startCamera;
+$("camera-stop").onclick = stopCamera;
+
+// ---------------------------------------------------------------------------
+// Location: the laptop running the pipeline has no GPS; this phone does. Positions
+// go to the server, which stamps each memory with the place it was written, so
+// "on the counter" can become "on the counter, at home".
+//
+// watchPosition, not a poll: iOS delivers a fix when one materially changes, which
+// for a phone sitting in a room is rarely, and costs far less battery than asking.
+// Accuracy is sent too and matters as much as the coordinates - the server refuses
+// a fix worse than 200m rather than confidently naming the wrong building.
+// ---------------------------------------------------------------------------
+let geoWatch = null;
+
+function startLocation() {
+  if (geoWatch !== null || !navigator.geolocation) return;
+  geoWatch = navigator.geolocation.watchPosition(
+    (pos) => {
+      fetch("/api/location", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ lat: pos.coords.latitude, lon: pos.coords.longitude,
+                               accuracy_m: pos.coords.accuracy }),
+      }).catch(() => {});
+    },
+    // Denied or unavailable is not an error worth interrupting anyone over: every
+    // memory still records what it SAW, it just does not also record where.
+    (err) => post_log("location", `unavailable: ${err.message}`),
+    { enableHighAccuracy: true, maximumAge: 30000, timeout: 20000 });
+}
+
+function post_log(tag, msg) {
+  fetch("/api/log", { method: "POST", headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ tag, msg }) }).catch(() => {});
+}
+
+// ---------------------------------------------------------------------------
+// The voice session
+// ---------------------------------------------------------------------------
+async function start() {
+  if (starting || running) return;
+  starting = true;
+  resetCaptions();
+  clearResult();
+  setVoiceState("connecting");
+  els.talk.disabled = true;
+  els.talk.textContent = "Starting Pam…";
+  say("Allow microphone access when your browser asks.");
+  try {
+    if (!navigator.mediaDevices?.getUserMedia) throw new Error("Open Pam using HTTPS on your phone, or localhost on your laptop.");
+    player = makePlayer();                // before mic: greeting audio may
+    await player.ctx.resume();            //   arrive while getUserMedia pends
+    mic = await startMic();               // audio unlock: we are inside the Start gesture
+    say("Connecting to Pam…");
+    const token = DG_OVERRIDE ? "test" : await (await fetch("/api/dg-token")).text();
+    if (token.startsWith("{")) throw new Error(JSON.parse(token).error);
+    const config = await (await fetch("/api/agent-config")).json();
+
+    // Handlers must bind the socket instance, not the `ws` global: if start()
+    // fails and is retried while this socket is still CONNECTING, a stale
+    // socket that opens late would send Settings on the WRONG socket (or throw
+    // on a null `ws`), leaving a zombie session that Deepgram kills 10s later
+    // with a confusing "send a Settings message" error.
+    const sock = ws = new WebSocket(DG_OVERRIDE || DG_URL, ["token", token]);
+    sock.binaryType = "arraybuffer";
+    sock.onopen = () => {
+      if (sock !== ws) { sock.close(); return; }   // superseded — don't leave a zombie session
+      sock.send(JSON.stringify({ type: "Settings", audio: {
+        input:  { encoding: "linear16", sample_rate: 16000 },
+        output: { encoding: "linear16", sample_rate: 24000 } }, agent: config }));
+    };
+    sock.onmessage = (m) => {
+      if (sock !== ws) return;
+      if (typeof m.data === "string") { onControl(JSON.parse(m.data)); return; }
+      if (player) player.play(m.data);   // audio can arrive before mic resolves
+    };
+    sock.onerror = sock.onclose = () => { if (sock === ws) { say("Connection lost. Tap Talk to Pam to try again.", true); stop(); } };
+    els.conn.textContent = "connecting";
+    voiceTimeout = setTimeout(() => {
+      if (sock === ws && !running) { say("Pam could not connect. Please try again.", true); stop(); }
+    }, 12000);
+    startCamera();   // same user gesture; outlives the voice session on purpose
+    startLocation();
+  } catch (e) {
+    // getUserMedia failures are the common case — say what to do, not just that it failed.
+    say(e.name === "NotAllowedError"
+        ? "Microphone blocked. Open your browser's site settings, allow Microphone, then reload."
+        : e.name === "NotFoundError" || e.name === "NotReadableError"
+        ? "No microphone available on this device."
+        : (e.message || "couldn't start"), true);
+    stop();
+  }
+}
+
+function onControl(m) {
+  switch (m.type) {
+    case "SettingsApplied":
+      clearTimeout(voiceTimeout);
+      starting = false; running = true;
+      els.talk.disabled = false;
+      els.talk.textContent = "Stop talking";
+      els.talk.setAttribute("aria-pressed", "true");
+      els.talk.className = "listening";
+      els.conn.textContent = "connected";
+      micMuted = false; $("mic-toggle").disabled = false; $("mic-toggle").hidden = false;
+      setVoiceState("listening");
+      say("I'm listening. Take your time.");
+      navigator.wakeLock?.request("screen").then(lock => { if (running) wakeLock = lock; else lock.release(); }).catch(() => {});
+      break;
+    case "ConversationText":
+      log(m.role === "user" ? "u" : "a", m.content);
+      if (m.role === "user") captionNewTurn = true;
+      else if (m.role === "assistant") appendCaption(m.content);
+      break;
+    case "UserStartedSpeaking":
+      captionNewTurn = true;
+      player?.stop(); setVoiceState("listening"); els.talk.className = "listening"; say("I'm listening. Take your time."); break;
+    case "AgentThinking":
+      if (!player?.active) setVoiceState("thinking");
+      els.talk.className = "speaking"; say("Let me think about that."); break;
+    case "AgentStartedSpeaking":
+      setVoiceState("speaking");
+      els.talk.className = "speaking"; say("Pam is speaking. You can speak to interrupt."); break;
+    case "AgentAudioDone":
+      if (!player?.active) setVoiceState(running ? "listening" : "idle");
+      els.talk.className = "listening"; break;
+    case "FunctionCallRequest":
+      if (!player?.active) setVoiceState("thinking");
+      for (const f of m.functions) runFunction(f); break;
+    case "Error":
+      say(m.description || "Pam could not connect. Please try again.", true); stop(); break;
+    case "Warning":
+      say(m.description || m.type, true); break;
+  }
+}
+
+function stop() {
+  running = false; starting = false; micMuted = false;
+  $("mic-toggle").disabled = true; $("mic-toggle").hidden = true;
+  $("mic-toggle").textContent = "Mute";
+  $("mic-toggle").setAttribute("aria-pressed", "false");
+  setVoiceState("idle");
+  clearTimeout(voiceTimeout);
+  els.talk.disabled = false;
+  els.talk.setAttribute("aria-pressed", "false");
+  // Close in ANY state — a CONNECTING socket that isn't closed opens later as
+  // a zombie session. close() during CONNECTING aborts the handshake cleanly.
+  if (ws) { const s = ws; ws = null;
+            s.onopen = s.onmessage = s.onclose = s.onerror = null;
+            try { s.close(); } catch {} }
+  if (mic) { mic.stream.getTracks().forEach(t => t.stop()); mic.ctx.close(); mic = null; }
+  if (player) { player.stop(); player.ctx.close(); player = null; }
+  if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
+  els.talk.textContent = "Talk to Pam"; els.talk.className = "";
+  els.conn.textContent = "offline";
+}
+
+els.talk.onclick = () => {
+  if (running) { stop(); say("Microphone is off. Tap Talk to Pam whenever you're ready."); }
+  else start();
+};
+$("mic-toggle").onclick = () => {
+  if (!running || !mic) return;
+  micMuted = !micMuted;
+  mic.stream.getAudioTracks().forEach(track => { track.enabled = !micMuted; });
+  $("mic-toggle").setAttribute("aria-pressed", String(micMuted));
+  $("mic-toggle").textContent = micMuted ? "Unmute" : "Mute";
+  setVoiceState(player?.active ? "speaking" : "listening");
+  say(micMuted ? "Your microphone is paused. You can still hear Pam." : "I'm listening. Take your time.");
+};
+
+// ---------------------------------------------------------------------------
+// Client-side functions. Each handler returns { say, card?, photo? } — `say`
+// goes back to Deepgram as the FunctionCallResponse content; card/photo render
+// on screen. This is the entire agentic surface.
+// ---------------------------------------------------------------------------
+const api = async (url, opts) => {
+  const r = await fetch(url, opts);
+  const j = await r.json().catch(() => ({}));
+  return r.ok ? j : { say: `Sorry, that didn't work. (${j.error || r.status})` };
+};
+
+const handlers = {
+  find_object:   (a) => api(`/api/find?q=${encodeURIComponent(a.item)}`),
+  get_schedule:  () => api(`/api/calendar`),
+  get_reminders: () => api(`/api/reminders`),
+  get_weather:   () => api(`/api/weather`),
+  get_time_and_place: () => api(`/api/time-and-place`),
+  check_pills_taken: () => api(`/api/pill-status`),
+  simulate_bottle_moved: () => api(`/api/dose/simulate-evidence`, { method: "POST" }),   // ?demo=1 only
+  show_photo:    (a) => api(`/api/photo-info?name=${encodeURIComponent(a.name)}`),
+  search_flights:(a) => api(`/api/flights?destination=${encodeURIComponent(a.destination)}&date=${encodeURIComponent(a.date || "")}`),
+  set_reminder:  (a) => api(`/api/reminders`, { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(a) }),
+  send_message:  (a) => api(`/api/message`, { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(a) }),
+  call_contact:  (a) => api(`/api/call`, { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(a) }),
+  call_caregiver:() => api(`/api/call`, { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({ name: "__caregiver__" }) }),
+  request_ride:  (a) => api(`/api/ride`, { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(a) }),
+  fetch_object:  (a) => api(`/api/fetch`, { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(a) }),
+};
+
+async function runFunction(f) {
+  const sock = ws;
+  const renderId = ++functionRenderId;
+  clearResult();
+  const handler = handlers[f.name];
+  let out;
+  try { out = handler ? await handler(JSON.parse(f.arguments || "{}")) : { say: `I don't know how to do ${f.name} yet.` }; }
+  catch (e) { out = { say: "Sorry, something went wrong." }; }
+  if (renderId === functionRenderId) {
+    if (out.card) showCard(out.card, f.name);
+    if (out.photo && f.name === "show_photo") showPhoto(out.photo);
+  }
+  if (sock && sock === ws && sock.readyState === WebSocket.OPEN)
+    sock.send(JSON.stringify({ type: "FunctionCallResponse", id: f.id, name: f.name,
+                             content: out.say || "Done." }));
+}
+
+// ---------------------------------------------------------------------------
+// Screen output: confirmation cards + photos. The tap IS the consent.
+// ---------------------------------------------------------------------------
+function clearResult() {
+  els.card.className = els.photo.className = "";
+  for (const image of document.querySelectorAll(".response-area img")) { image.removeAttribute("src"); image.style.display = "none"; }
+}
+$("result-close").onclick = () => { clearResult(); els.talk.focus({ preventScroll: true }); };
+function showCard(c, source = "") {
+  els.card.querySelector(".title").textContent = c.title || "";
+  els.card.querySelector(".body").textContent = c.body || "";
+  const img = els.card.querySelector("img");
+  img.style.display = "none";
+  img.removeAttribute("src");
+  if (source === "find_object" && c.image) { img.src = c.image; img.alt = `Recorded location of ${c.title || "your item"}`; img.style.display = "block"; }
+  const [a1, a2] = els.card.querySelectorAll("a.action");
+  for (const [el, act] of [[a1, c.action], [a2, c.action2]]) {
+    el.style.display = "none";
+    el.onclick = null;
+    if (act) {
+      el.textContent = act.label; el.href = act.href || "#"; el.style.display = "block";
+      if (act.post) el.onclick = (ev) => { ev.preventDefault(); cardAction(act); };   // a button that answers Pam
+    }
+  }
+  els.card.className = "show";
+  els.photo.className = "";
+  if (currentView !== "talk") $("tab-talk").dataset.new = "true";
+}
+
+// A card button that POSTs an answer (the pill question). The reply is shown and spoken exactly.
+async function cardAction(act) {
+  const out = await api(act.post, { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(act.body || {}) });
+  clearResult();
+  if (out.say) { showCard({ title: "Your pills", body: out.say }); speak(out.say); }
+}
+
+// Have Pam say exactly this. Falls back to the status line when there is no live voice session.
+function speak(text) {
+  if (running && ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "InjectAgentMessage", message: text }));
+  else els.status.textContent = text;
+}
+
+function showPhoto(p) {
+  els.photo.querySelector("img").src = p.url;
+  els.photo.querySelector("img").style.display = "block";
+  els.photo.querySelector("img").alt = p.caption || "Family photo";
+  els.photo.querySelector(".cap").textContent = p.caption || "";
+  els.photo.className = "show";
+  els.card.className = "";
+  if (currentView !== "talk") $("tab-talk").dataset.new = "true";
+}
+
+// ---------------------------------------------------------------------------
+// Pushed messages (reminders firing, "the arm is done") -> spoken by Pam.
+// ---------------------------------------------------------------------------
+const memories = new Map();
+let lastShine = -Infinity;
+function renderMemoryHistory() {
+  const query = $("memory-search").value.trim().toLowerCase();
+  const matches = [...memories.values()].reverse().filter(m => `${m.object || ""} ${m.detail || ""}`.toLowerCase().includes(query));
+  const rows = matches.map(m => {
+    const li = document.createElement("li"), button = document.createElement("button");
+    button.className = "row";
+    const main = document.createElement("span"); main.className = "row-main";
+    const title = document.createElement("strong"), description = document.createElement("span");
+    description.className = "row-sub";
+    title.textContent = m.object ? m.object[0].toUpperCase() + m.object.slice(1) : "Saved observation";
+    description.textContent = m.detail || "No description available.";
+    main.append(title, description);
+    const chev = document.createElement("span"); chev.className = "chev"; chev.textContent = "›"; chev.setAttribute("aria-hidden", "true");
+    button.append(main, chev);
+    button.onclick = () => {
+      selectView("talk", true);
+      showCard({ title: m.object || "Saved observation", body: m.detail });
+      els.card.focus();
+      say("Here's the saved observation. It may not be the item's current location.");
+    };
+    li.append(button);
+    return li;
+  });
+  if (!rows.length) {
+    const li = document.createElement("li");
+    li.textContent = query ? "No recent memories match. Try another word." : "Saved observations will appear here.";
+    rows.push(li);
+  }
+  $("memory-history").replaceChildren(...rows);
+}
+$("memory-search").oninput = renderMemoryHistory;
+function showMemory(memory, fresh = true) {
+  if (!memory.id || memories.has(memory.id)) return;
+  memories.set(memory.id, memory);
+  if (memories.size > 100) memories.delete(memories.keys().next().value);
+  $("memory-title").textContent = memory.title || "Memory saved";
+  $("memory-detail").textContent = memory.detail || "Pam saved a new observation.";
+  const date = new Date(memory.logged_at);
+  $("memory-time").textContent = Number.isNaN(date.getTime()) ? "" : date.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  $("memory-time").dateTime = Number.isNaN(date.getTime()) ? "" : date.toISOString();
+  renderMemoryHistory();
+  $("memory-peek-detail").textContent = fresh ? `New memory: ${memory.object || "observation"}` : "Your memories are ready.";
+  if (fresh) $("memory-announcement").textContent = `${memory.title || "Memory saved"}: ${memory.object || "a new observation"}`;
+  if (fresh && currentView !== "memories") {
+    $("tab-memories").dataset.new = "true";
+    $("tab-memories").setAttribute("aria-label", "Memories, new memory saved");
+  }
+  if (fresh && performance.now() - lastShine > 8000 && !matchMedia("(prefers-reduced-motion: reduce)").matches && document.documentElement.dataset.effects !== "off") {
+    lastShine = performance.now();
+    $("memory-shine").classList.remove("shine");
+    requestAnimationFrame(() => $("memory-shine").classList.add("shine"));
+  }
+}
+$("memory-shine").addEventListener("animationend", () => $("memory-shine").classList.remove("shine"));
+const es = new EventSource("/api/push");
+es.onopen = () => { $("feed-state").textContent = "Memory updates connected"; };
+es.onerror = () => { $("feed-state").textContent = "Memory updates paused. Reconnecting…"; };
+es.onmessage = (e) => {
+  const m = JSON.parse(e.data);
+  if (m.type === "hello") { for (const memory of m.memories || []) showMemory(memory, false); }
+  if (m.type === "memory_saved") showMemory(m);
+  if (m.type === "say" && running && ws && ws.readyState === WebSocket.OPEN)
+    ws.send(JSON.stringify({ type: "InjectUserMessage", content: m.text }));
+  else if (m.type === "say")
+    els.status.textContent = m.text;   // not connected — still show it
+  if (m.type === "speak") speak(m.text);   // exact words: the pill prompts are worded on purpose
+  if (m.type === "card") { selectView("talk", true); clearResult(); showCard(m.card); }
+};
+
+// The page greets by time of day; it should feel like it noticed you arrive.
+{
+  const hour = new Date().getHours();
+  $("greeting").textContent = hour < 12 ? "Good morning." : hour < 18 ? "Good afternoon." : "Good evening.";
+}
+
+for (const [id, key] of [["large-text", "large"], ["high-contrast", "contrast"], ["reduce-effects", "effects"]]) {
+  const input = $(id);
+  const apply = () => { document.documentElement.dataset[key] = key === "effects" ? (input.checked ? "off" : "on") : String(input.checked); voiceVisual?.refresh(); };
+  try { input.checked = localStorage.getItem(`pam-${key}`) === "true"; } catch {}
+  apply();
+  input.onchange = () => { apply(); try { localStorage.setItem(`pam-${key}`, String(input.checked)); } catch {} };
+}
+
+async function quickHelp(button, action) {
+  selectView("talk");
+  button.disabled = true;
+  try {
+    const out = await action();
+    if (out.card) showCard(out.card);
+    if (out.photo) showPhoto(out.photo);
+    say(out.say || "Your information is ready.");
+    log("a", out.say || "Your information is ready.");
+    if (out.card) els.card.focus();
+  } catch { say("That didn't connect. Please try again.", true); }
+  finally { button.disabled = false; }
+}
+$("caregiver").onclick = () => quickHelp($("caregiver"), () => api("/api/caregiver-card"));
+voiceVisual = createVoiceVisual();
+setVoiceState("idle");
+window.addEventListener("pagehide", () => { stop(); stopCamera(); es.close(); voiceVisual?.dispose(); captionResize.disconnect(); });
+window.addEventListener("pageshow", event => { if (event.persisted) location.reload(); });
+
+// ---------------------------------------------------------------------------
+function say(msg, isErr) { els.status.textContent = msg; els.status.classList.toggle("error", !!isErr); }
+function log(cls, text) {
+  const d = document.createElement("div");
+  d.className = cls; d.textContent = (cls === "u" ? "You: " : "Pam: ") + text;
+  els.log.prepend(d);
+}
+
+// ?demo=1 — a button per function so every feature is testable with no voice.
+if (location.search.includes("demo")) {
+  els.demo.className = "show";
+  const tests = {
+    find_object:  { item: "pill bottle" }, get_schedule: {}, get_reminders: {},
+    get_weather:  {}, get_time_and_place: {}, show_photo: { name: "Sarah" },
+    check_pills_taken: {}, simulate_bottle_moved: {},
+    search_flights: { destination: "New York", date: "next Friday" },
+    set_reminder: { text: "take your medication", in_minutes: 1 },
+    send_message: { to: "Sarah", message: "thinking of you" },
+    call_contact: { name: "Sarah" }, call_caregiver: {},
+    request_ride: { destination: "airport" }, fetch_object: { item: "pill bottle" },
+  };
+  for (const [name, args] of Object.entries(tests)) {
+    const b = document.createElement("button");
+    b.textContent = name;
+    b.onclick = async () => {
+      const out = await handlers[name](args);
+      clearResult();
+      if (out.card) showCard(out.card, name);
+      if (out.photo && name === "show_photo") showPhoto(out.photo);
+      log("a", out.say || "(no response)");
+    };
+    els.demo.appendChild(b);
+  }
+}
+</script>
+</body>
+</html>

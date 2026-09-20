@@ -1,0 +1,16 @@
+{
+  "contacts": [
+    {"name": "Sarah",  "relation": "granddaughter", "phone": "+15551234567", "photo": "sarah"},
+    {"name": "Mike",   "relation": "son",           "phone": "+15557654321", "photo": "mike"},
+    {"name": "Dr. Patel", "relation": "doctor",     "phone": "+15559876543", "photo": null}
+  ],
+  "caregiver": {"name": "Mike", "phone": "+15557654321"},
+  "places": {
+    "home":     {"lat": 42.3601, "lon": -71.0942, "address": "77 Massachusetts Ave, Cambridge, MA"},
+    "airport":  {"lat": 42.3656, "lon": -71.0096, "address": "Boston Logan Airport"},
+    "doctor":   {"lat": 42.3614, "lon": -71.0570, "address": "Massachusetts General Hospital"},
+    "pharmacy": {"lat": 42.3736, "lon": -71.1097, "address": "CVS, Central Square, Cambridge"},
+    "park":     {"lat": 42.3554, "lon": -71.0655, "address": "Boston Common"}
+  },
+  "home_airport": "BOS"
+}

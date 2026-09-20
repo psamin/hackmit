@@ -28,9 +28,12 @@ EVENT SCHEMA — one JSON object per line of events.jsonl
                       "placed"      an object the wearer moved has come to rest.
                                     This is the main one; `box` marks the object.
                       "sighted"     a target class seen at rest after being out of
-                                    view for a while. The put-down itself was
-                                    missed, so treat the location as current but
-                                    the action as unobserved.
+                                    view for a while, or seen for the first time.
+                                    The put-down itself was missed, so treat the
+                                    location as current but the action as
+                                    unobserved. Nothing was seen moving, so these
+                                    carry a SINGLE frame and t_before/t_during are
+                                    null -- do not describe an action from them.
                       "arm_episode" the wearer's arm moved and then stopped while a
                                     target class was visible, but the tracker could
                                     not say which object moved. `box` is null —
@@ -40,13 +43,19 @@ EVENT SCHEMA — one JSON object per line of events.jsonl
   track      int    tracker ID for the object; -1 for "arm_episode".
   t          float  seconds into the run (or wall-clock epoch on a live source)
                     at which the event fired.
-  t_before   float  timestamp of the BEFORE frame.
-  t_during   float  timestamp of the DURING frame.
+  t_before   float  timestamp of the BEFORE frame; null on a single-frame event.
+  t_during   float  timestamp of the DURING frame; null on a single-frame event.
+  targets    list   Every prompt the detector could have chosen from. The VLM
+                    receives this as its candidate set and decides which one the
+                    object actually is; `object` above is only the detector's
+                    single best-scoring guess, and it cannot say "none of these".
   box        list   [x1, y1, x2, y2] in the 640px-wide processed frame, or null.
                     The AFTER frame already has this drawn on it in yellow.
   frames     list   Paths to the saved JPEGs, in order: BEFORE, DURING, AFTER.
-                    Usually three; treat the list as ordered-and-possibly-shorter
-                    rather than assuming a length.
+                    Three when motion was observed, one (AFTER only) for a
+                    "sighted" snapshot. Treat the list as ordered-and-possibly-
+                    shorter rather than assuming a length -- the `before`,
+                    `during` and `after` properties below already do.
 
 Paths in `frames` are written relative to wherever the pipeline was run from, so
 resolve them against that directory if the VLM process starts somewhere else.
