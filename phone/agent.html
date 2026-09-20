@@ -250,7 +250,7 @@ for (const dialog of document.querySelectorAll("dialog")) {
     if (event.target === dialog && (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom)) dialog.close();
   });
 }
-$("features-open").onclick = () => openDialog("features-dialog", $("features-open"));
+$("features-open").onclick = () => { openDialog("features-dialog", $("features-open")); refreshCalendarStatus(); };
 $("transcript-open").onclick = () => openDialog("transcript-dialog", $("transcript-open"));
 $("features-transcript").onclick = () => { $("features-dialog").close(); openDialog("transcript-dialog", $("features-open")); };
 const CAPABILITIES = [
@@ -259,6 +259,8 @@ const CAPABILITIES = [
   ["get_reminders", "Read your reminders", "Hear the reminders you've already saved.", "What are my reminders?"],
   ["set_reminder", "Set a reminder", "Save a reminder. Spoken alerts need Pam to stay open and connected.", "Remind me to call Sarah in ten minutes."],
   ["get_weather", "Check the weather", "Get the current weather for your saved home location.", "What's the weather like?"],
+  ["who_is_this", "Recognise a person", "Name someone the camera can see, if they have been introduced before.", "Who is this?"],
+  ["save_face", "Remember a person", "Store the face the camera can see under a name. Nothing is kept until you give one.", "This is my son Jacob."],
   ["call_contact", "Call someone", "Prepare a call to a saved contact using your phone or a connected calling service.", "Help me call Sarah."],
   ["call_caregiver", "Reach your caregiver", "Get help contacting the caregiver saved in Pam.", "I'd like to call my caregiver."],
   ["send_message", "Write a message", "Prepare a message to a saved contact. Sending depends on your phone or messaging service.", "Help me text Sarah that I'm home."],
@@ -272,7 +274,31 @@ for (const [name, title, description, example] of CAPABILITIES) {
   const item = document.createElement("li"); item.dataset.capability = name;
   const heading = document.createElement("h3"), body = document.createElement("p"), hint = document.createElement("span");
   heading.textContent = title; body.textContent = description; hint.className = "feature-example"; hint.textContent = `“${example}”`;
-  item.append(heading, body, hint); $("capability-list").append(item);
+  item.append(heading, body, hint);
+  if (name === "get_schedule") {
+    const status = document.createElement("p"), link = document.createElement("a");
+    status.id = "calendar-connection-status"; status.className = "privacy"; status.setAttribute("role", "status");
+    status.textContent = "Open Features to check your calendar connection.";
+    link.id = "calendar-connect"; link.className = "chip calendar-connect"; link.href = "/api/calendar/google/connect";
+    link.target = "_blank"; link.rel = "noopener noreferrer"; link.textContent = "Connect Google Calendar"; link.hidden = true;
+    item.append(status, link);
+  }
+  $("capability-list").append(item);
+}
+async function refreshCalendarStatus() {
+  const label = $("calendar-connection-status"), link = $("calendar-connect");
+  link.hidden = true;
+  label.textContent = "Checking calendar connection…";
+  try {
+    const response = await fetch("/api/calendar/status");
+    if (!response.ok) throw new Error("Calendar status unavailable");
+    const status = await response.json();
+    if (status.connected) label.textContent = "Google Calendar linked. Read-only access.";
+    else if (!status.configured) label.textContent = "Google Calendar is not connected. Your helper needs to add the OAuth client on the laptop.";
+    else label.textContent = status.can_connect_here ? "Connect your Google account to let Pam read today's schedule." : "Finish Google sign-in on the laptop at http://127.0.0.1:8000/.";
+    link.textContent = status.connected ? "Reconnect Google Calendar" : "Connect Google Calendar";
+    link.hidden = !status.configured || !status.can_connect_here;
+  } catch { label.textContent = "Calendar setup is unavailable. Ask your helper to restart Pam's backend on the laptop."; }
 }
 $("feature-search").oninput = () => {
   const query = $("feature-search").value.trim().toLowerCase();
@@ -896,7 +922,7 @@ $("mic-toggle").onclick = () => {
 const api = async (url, opts) => {
   const r = await fetch(url, opts);
   const j = await r.json().catch(() => ({}));
-  return r.ok ? j : { say: `Sorry, that didn't work. (${j.error || r.status})` };
+  return r.ok ? j : { say: j.say || `Sorry, that didn't work. (${j.error || r.status})` };
 };
 
 const handlers = {
@@ -912,6 +938,8 @@ const handlers = {
   call_caregiver:() => api(`/api/call`, { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({ name: "__caregiver__" }) }),
   request_ride:  (a) => api(`/api/ride`, { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(a) }),
   fetch_object:  (a) => api(`/api/fetch`, { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(a) }),
+  who_is_this:   () => api(`/api/face/who`),
+  save_face:     (a) => api(`/api/face/save`, { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(a) }),
 };
 
 async function runFunction(f) {
@@ -1217,6 +1245,7 @@ if (location.search.includes("demo")) {
   els.demo.className = "show";
   const tests = {
     find_object:  { item: "pill bottle" }, get_schedule: {}, get_reminders: {},
+    who_is_this:  {}, save_face: { name: "Test Person" },
     get_weather:  {}, show_photo: { name: "Sarah" },
     search_flights: { destination: "New York", date: "next Friday" },
     set_reminder: { text: "take your medication", in_minutes: 1 },

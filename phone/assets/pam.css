@@ -274,6 +274,7 @@ dialog::backdrop { background: #182e435c; }
 .capability-list h3 { font-size: .95rem; font-weight: 600; margin-bottom: 8px; }
 .capability-list p { color: var(--slate); font-size: .82rem; }
 .feature-example { display: block; margin-top: 12px; font-size: .8rem; color: var(--blue-text); }
+.calendar-connect { display: inline-flex; align-items: center; margin-top: 12px; color: var(--blue-text); text-decoration: none; }
 #camera-dialog { width: min(920px, calc(100% - 32px)); }
 #camera-expanded { display: block; width: 100%; max-height: 60dvh; aspect-ratio: 16 / 9; object-fit: contain; border-radius: 16px; background: var(--paper); }
 #camera-expanded-empty { padding: 40px 20px; text-align: center; background: var(--paper); border-radius: 16px; }

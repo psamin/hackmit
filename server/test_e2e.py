@@ -32,11 +32,11 @@ def demo_buttons(page):
         els = dict(card=page.locator("#card"), photo=page.locator("#photo"), log=page.locator("#log"))
         btn.click()
         page.wait_for_timeout(1200)
-        logged = name in (els["log"].inner_text() or "") or "Pam:" in els["log"].inner_text()
+        logged = name in (els["log"].text_content() or "") or "Pam:" in els["log"].text_content()
         rendered = "show" in (els["card"].get_attribute("class") or "") or \
                    "show" in (els["photo"].get_attribute("class") or "")
         # a pass = the handler ran and produced a Pam line; cards/photos are bonus output
-        check(f"handler {name}", logged, els["log"].inner_text().splitlines()[0][:80] if logged else "no log")
+        check(f"handler {name}", logged, els["log"].text_content().splitlines()[0][:80] if logged else "no log")
 
 
 def fake_session(page):
@@ -55,9 +55,9 @@ def fake_session(page):
         page.wait_for_function("document.getElementById('log').textContent.includes('Function result received')",
                                timeout=8000)
         check("function round-trip", True,
-              page.locator("#log").inner_text().splitlines()[0][:100])
+              page.locator("#log").text_content().splitlines()[0][:100])
     except Exception:
-        check("function round-trip", False, page.locator("#log").inner_text()[:100])
+        check("function round-trip", False, page.locator("#log").text_content()[:100])
     page.click("#talk")  # hang up cleanly
     check("session stops", "offline" in page.locator("#conn").inner_text())
 
