@@ -26,11 +26,29 @@ import numpy as np
 ARM_IDS = (1, 2, 3, 4, 5, 6)  # OpenYAM joints 1-3 are DM4340, 4-6 DM4310; feedback on send ID + 0x10
 GRIPPER_S = 2.0        # the gripper closes in place over this long: the motor is slower than the arm
 GRIPPER_SETTLE_S = 0.5  # hold after it closes, before lifting
+GRIPPER_EPS = 0.05      # a gripper read off the hardware settles near 0 or 1, never exactly on it
 # Joint limits (rad), read off dimOS's yam_gripper_gravity.urdf, which is what the Damiao adapter clamps feedback
 # against. Replay noise never pushes a target past them. Teaching can: the motors are disabled, so the arm can be
 # pushed a little beyond a software limit by hand, and the adapter then clamps it back (a fault only past 0.05 rad).
 LIMITS = np.array([(-3.92699, 1.57080), (0.0, 3.66519), (0.0, 4.01426),
                    (-1.65806, 1.65806), (-1.57080, 1.57080), (-2.35619, 1.83260)])
+
+
+def clamp_to_limits(q: list, name: str) -> list:
+    """Bring a taught pose inside the joint limits, reporting anything it had to move.
+
+    The motors are off while teaching, so a joint can be pushed past its software limit by hand and the encoder
+    reports it honestly. The Damiao adapter clamps such a command back at replay, so store what the arm can actually
+    be told to do. Past its own 0.05 rad fault margin the pose is wrong, not just over the edge, so say so loudly.
+    """
+    rounded = np.round(np.asarray(q, float), 4)  # round first: rounding a clamped value can push it back out
+    inside = np.clip(rounded, LIMITS[:, 0], LIMITS[:, 1])
+    for j in np.nonzero(inside != rounded)[0]:
+        over = abs(rounded[j] - inside[j])
+        loud = "  THAT IS A LOT - re-teach this pose" if over > 0.05 else ""
+        print(f"  clamped {name} joint {j + 1}: {rounded[j]:+.5f} -> {inside[j]:+.5f} ({over:.4f} rad past its "
+              f"limit){loud}")
+    return [float(v) for v in inside]
 
 
 def teach(path: str) -> None:
@@ -67,8 +85,9 @@ def teach(path: str) -> None:
                 if poses and shown == poses[-1]["q"]:
                     print(f"  NOT SAVED: identical to {poses[-1]['name']}; the arm did not move. Move it and retry.")
                     continue
-                poses.append({"name": words[0], "q": shown, "gripper": 1.0 if words[1] == "o" else 0.0})
-                print(f"  saved {words[0]} {'open' if words[1] == 'o' else 'CLOSED'} {shown}")
+                q = clamp_to_limits(shown, words[0])
+                poses.append({"name": words[0], "q": q, "gripper": 1.0 if words[1] == "o" else 0.0})
+                print(f"  saved {words[0]} {'open' if words[1] == 'o' else 'CLOSED'} {q}")
     finally:
         robot.__exit__(None, None, None)
     json.dump({"poses": poses}, open(path, "w"), indent=1)
@@ -106,8 +125,10 @@ def handover(path: str, out: str, rad: float, turn: float) -> None:
     grasp = next(p for p in json.load(open(path))["poses"] if not p["gripper"])
     up = list(grasp["q"])
     up[1] = round(up[1] - rad, 4)
+    up = clamp_to_limits(up, "lift")
     turned = list(up)
     turned[0] = round(turned[0] + turn, 4)
+    turned = clamp_to_limits(turned, "turn")
     poses = [{"name": "lift", "q": up, "gripper": 0.0},
              {"name": "turn", "q": turned, "gripper": 0.0},
              {"name": "release", "q": turned, "gripper": 1.0}]
@@ -176,13 +197,14 @@ def build_trajectory(joint_names, start, poses, speed, noise, rng):
     points = [TrajectoryPoint(positions=[*arm, gripper], velocities=zeros, time_from_start=0.0)]
     for pose in poses:
         target = np.asarray(pose["q"], float)
-        if pose["gripper"] == gripper:  # bound the noise, but never move the taught pose itself
+        holds = abs(pose["gripper"] - gripper) < GRIPPER_EPS  # a measured start value is never exactly 0.0 or 1.0
+        if holds:  # bound the noise, but never move the taught pose itself
             lo, hi = np.minimum(LIMITS[:, 0], target), np.maximum(LIMITS[:, 1], target)
             target = np.clip(target + rng.uniform(-noise, noise, target.shape), lo, hi)
         t += max(float(np.abs(target - arm).max()) / speed, 0.5)
         arm = target
         points.append(TrajectoryPoint(positions=[*arm, gripper], velocities=zeros, time_from_start=t))
-        if pose["gripper"] != gripper:  # close/open in place, then settle before moving on
+        if not holds:  # close/open in place, then settle before moving on
             gripper, t = pose["gripper"], t + GRIPPER_S
             points.append(TrajectoryPoint(positions=[*arm, gripper], velocities=zeros, time_from_start=t))
             t += GRIPPER_SETTLE_S
@@ -279,9 +301,14 @@ def record(args) -> None:
                 else:
                     raise RuntimeError(f"trajectory rejected: {result.status.name} {result.message or ''}")
                 time.sleep(duration + 0.5)
-                keys.press("enter")  # save
-                saved += 1
-                print(f"[{rep + 1}/{args.reps}] {path}: saved ({duration:.1f} s)", flush=True)
+                # Last chance to throw the episode away: a rep the arm was knocked during, or one you leaned into,
+                # is worse than no rep at all. The arm holds the grasp while you decide.
+                drop = args.auto_reset is None and input(
+                    f"[{rep + 1}/{args.reps}] Enter = keep, d = discard: ").strip().lower() == "d"
+                keys.press("d" if drop else "enter")
+                saved += not drop
+                print(f"[{rep + 1}/{args.reps}] {path}: {'DISCARDED' if drop else f'saved ({duration:.1f} s)'}",
+                      flush=True)
                 if args.hold:  # stay closed on the bottle so the grasp is visible before the preset runs
                     print(f"holding at the lift for {args.hold:.0f} s", flush=True)
                     time.sleep(args.hold)
