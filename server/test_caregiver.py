@@ -238,6 +238,7 @@ class AdherencePage(Base):
     def test_it_says_how_each_answer_arrived(self):
         self.assertIn("said to Pam", self.text)
         self.assertIn("tapped on the card", self.text)
+        self.assertIn("recorded when the arm handed over the pills", self.text)      # an arm hand-over is not a tap
 
     def test_it_shows_when_a_switch_has_been_turned_off(self):
         self.assertIn("Spoken answers", self.text)

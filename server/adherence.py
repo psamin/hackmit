@@ -169,12 +169,12 @@ def on_time_rate(summary: Summary, days: int = 7) -> float | None:
 
 
 def answers_by(summary: Summary, days: int = 7) -> dict:
-    """How the answered doses of the last `days` days arrived: {"voice": said to Pam, "tap": tapped on the card}.
-    An answer with no recorded channel (an old log line) was a tap."""
+    """How the answered doses of the last `days` days arrived: {"voice": said to Pam, "tap": tapped on the card,
+    "robot": recorded when the arm handed the pills over}. An answer with no recorded channel (an old log line) was a tap."""
     since = summary.today - timedelta(days=days - 1)
     answered = [d for day in summary.days if day.day >= since for d in day.doses if d.state in (ON_TIME, LATE)]
-    voice = sum(d.via == "voice" for d in answered)
-    return {"voice": voice, "tap": len(answered) - voice}
+    voice, robot = sum(d.via == "voice" for d in answered), sum(d.via == "robot" for d in answered)
+    return {"voice": voice, "tap": len(answered) - voice - robot, "robot": robot}
 
 
 # --------------------------------------------------------------------------------

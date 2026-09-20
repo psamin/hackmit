@@ -5,69 +5,101 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Pam oversight</title>
 <style>
+  /* The look of the phone app (phone/assets/pam.css): flat white, hairlines, one blue used for signal.
+     Same colour names, so the two stay easy to compare. Light only, like the phone app. */
   :root {
-    --bg: #f6f7fb; --card: #ffffff; --ink: #1c2233; --sub: #5a6478; --line: #dde1ec;
-    --accent: #2f5fd0; --on-accent: #ffffff; --ok: #17794a; --off: #8a5a00; --err: #b3261e;
-    --warn-bg: #fff6e0; --err-bg: #fdecea; --ok-bg: #e7f6ee; --ask-bg: #eaf0ff;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #10131c; --card: #181c28; --ink: #eef0f7; --sub: #a3abbf; --line: #2b3145;
-      --accent: #8fb0ff; --on-accent: #0b1020; --ok: #62d49a; --off: #f0b85a; --err: #ff8a80;
-      --warn-bg: #2a2412; --err-bg: #2c1817; --ok-bg: #12261c; --ask-bg: #172038;
-    }
+    color-scheme: light; font-size: 18px;
+    --bg: #fff; --paper: #f5f7fa; --ink: #1b2938; --slate: #536375; --line: #e3e9f0;
+    --blue: #2367bb; --blue-deep: #19549d; --blue-mist: #edf4fd; --blue-text: #19549d; --on-blue: #fff;
+    --error: #a92c2c; --error-bg: #fbeeee; --success: #247249; --success-bg: #eaf5ee;
+    --warn: #8a5a00; --warn-bg: #fff6e0;
   }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--ink); font: 18px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
-  main { max-width: 880px; margin: 0 auto; padding: 24px 16px 64px; }
-  header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 20px; }
-  h1 { font-size: 1.5rem; margin: 0; }
-  h2 { font-size: 1.15rem; margin: 0 0 4px; }
-  h3 { font-size: 1rem; margin: 18px 0 6px; }
-  p { margin: 0 0 12px; }
-  .sub { color: var(--sub); font-size: .92rem; }
-  .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 20px; margin-bottom: 16px; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; }
-  .tile { border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
-  .tile .label { color: var(--sub); font-size: .85rem; }
+  body { margin: 0; min-height: 100dvh; background: var(--bg); color: var(--ink); font: 1rem/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  h1, h2, h3, p { margin: 0; }
+  :focus-visible { outline: 3px solid var(--blue); outline-offset: 4px; }
+  [hidden] { display: none !important; }
+  .skip { position: fixed; transform: translateY(-160%); z-index: 5; padding: 14px; background: var(--bg); }
+  .skip:focus { transform: none; }
+
+  .topbar { border-bottom: 1px solid var(--line); background: var(--bg); }
+  .topbar-inner { width: min(880px, 100%); margin: auto; min-height: 76px; padding: 14px 16px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+  .wordmark { width: 84px; aspect-ratio: 592 / 215; display: block; background: var(--blue); mask: url('/assets/pam-logo.png') center / contain no-repeat; -webkit-mask: url('/assets/pam-logo.png') center / contain no-repeat; }
+  .chip { padding: 8px 16px; border: 1px solid var(--line); border-radius: 999px; font-size: .8rem; font-weight: 600; color: var(--slate); }
+
+  main { width: min(880px, 100%); margin: 0 auto; padding: 24px 16px 72px; }
+  #app > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 26px; }
+  h1 { font-size: 1.6rem; font-weight: 600; line-height: 1.2; }
+  h2 { font-size: 1.1rem; font-weight: 600; margin-bottom: 4px; }
+  h3 { font-size: 1rem; font-weight: 600; margin: 20px 0 8px; }
+  p { margin-bottom: 12px; }
+  .sub { color: var(--slate); font-size: .88rem; }
+  #app > header .sub { margin: 5px 0 0; }
+  .card { background: var(--bg); border: 1px solid var(--line); border-radius: 22px; padding: 22px; margin-bottom: 18px; }
+  #login, #off { max-width: 460px; margin: 6vh auto 0; }
+
+  /* Status: a grouped list, one hairline row per switch. */
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+  .tile { background: var(--paper); border: 1px solid var(--line); border-radius: 16px; padding: 14px 16px; }
+  .tile .label { color: var(--slate); font-size: .8rem; }
   .tile .value { font-size: 1.15rem; font-weight: 600; }
-  .on { color: var(--ok); } .off { color: var(--off); }
+  #tiles { display: block; border: 1px solid var(--line); border-radius: 18px; overflow: hidden; margin-top: 14px; }
+  #tiles .tile { display: flex; justify-content: space-between; align-items: center; gap: 16px; background: var(--bg); border: 0; border-top: 1px solid var(--line); border-radius: 0; padding: 14px 18px; }
+  #tiles .tile:first-child { border-top: 0; }
+  #tiles .label { font-size: .9rem; }
+  #tiles .value { display: flex; align-items: center; justify-content: flex-end; font-size: .9rem; text-align: right; }
+  #tiles .value::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 8px; flex: none; border-radius: 50%; background: currentColor; }
+  #adh-tiles { margin-top: 14px; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
+  .on { color: var(--success); } .off { color: var(--warn); }
+
   label { display: block; font-weight: 600; margin-bottom: 6px; }
-  input, textarea { width: 100%; font: inherit; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+  input, textarea, select { width: 100%; font: inherit; color: var(--ink); min-height: 52px; padding: 12px 16px; border-radius: 14px; border: 1px solid var(--line); background: var(--bg); }
   textarea { min-height: 150px; resize: vertical; line-height: 1.45; }
-  input:focus-visible, textarea:focus-visible, button:focus-visible, summary:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
-  button { font: inherit; font-weight: 600; padding: 12px 20px; border-radius: 999px; border: 0; cursor: pointer; background: var(--accent); color: var(--on-accent); min-height: 48px; }
-  button.quiet { background: transparent; color: var(--accent); border: 1px solid var(--line); }
-  button:disabled { opacity: .5; cursor: not-allowed; }
-  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 12px; }
-  .error { color: var(--err); min-height: 1.5em; margin-top: 10px; }
-  code { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px; font-size: .9em; }
+  select { width: auto; min-height: 46px; padding: 8px 14px; }
+  button { font: inherit; font-weight: 600; min-height: 52px; padding: 0 24px; border: 0; border-radius: 999px; cursor: pointer; touch-action: manipulation; white-space: nowrap; background: var(--blue); color: var(--on-blue); }
+  button:active { transform: scale(.985); }
+  button.quiet { background: var(--blue-mist); color: var(--blue-text); min-height: 46px; }
+  button:disabled { opacity: .55; cursor: default; }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 14px; }
+  .error { color: var(--error); min-height: 1.5em; margin-top: 10px; font-size: .9rem; }
+  code { background: var(--paper); border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px; font-size: .9em; }
   ul.plain { list-style: none; padding: 0; margin: 0; }
-  ul.plain li { padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; margin-bottom: 8px; }
-  .quote { display: block; color: var(--sub); font-size: .85rem; margin-top: 4px; white-space: pre-wrap; }
-  .box { border-radius: 12px; padding: 12px 14px; margin: 12px 0; }
-  .box.ask { background: var(--ask-bg); } .box.warn { background: var(--warn-bg); }
-  .box.bad { background: var(--err-bg); } .box.good { background: var(--ok-bg); }
+  ul.plain li { padding: 12px 14px; border: 1px solid var(--line); border-radius: 14px; margin-bottom: 8px; }
+  .quote { display: block; color: var(--slate); font-size: .85rem; margin-top: 4px; white-space: pre-wrap; }
+  .box { border-radius: 14px; padding: 14px 16px; margin: 14px 0; font-size: .92rem; }
+  .box.ask { background: var(--blue-mist); } .box.warn { background: var(--warn-bg); }
+  .box.bad { background: var(--error-bg); } .box.good { background: var(--success-bg); }
   .box ul { margin: 6px 0 0; padding-left: 20px; }
   .ack { display: flex; gap: 10px; align-items: flex-start; font-weight: 400; margin: 8px 0; }
-  .ack input { width: 22px; height: 22px; margin-top: 3px; flex: none; }
+  .ack input { width: 22px; height: 22px; min-height: 0; margin-top: 3px; flex: none; accent-color: var(--blue); }
   .changes li { white-space: pre-wrap; }
-  details { margin-top: 12px; } summary { cursor: pointer; font-weight: 600; }
-  .days { display: grid; gap: 10px; margin-top: 12px; }
-  .day { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
+  details { margin-top: 14px; } summary { cursor: pointer; font-weight: 600; color: var(--blue-text); min-height: 44px; display: flex; align-items: center; }
+
+  /* Adherence */
+  .days { display: grid; gap: 10px; margin-top: 14px; }
+  .day { background: var(--paper); border: 1px solid var(--line); border-radius: 16px; padding: 14px 16px; }
   .day-head { display: flex; flex-wrap: wrap; gap: 6px 12px; justify-content: space-between; align-items: baseline; }
   .day-head strong { font-size: 1rem; }
-  .dose { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 6px 0 0; font-size: .95rem; }
+  .dose { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); font-size: .92rem; }
   .dose .what { flex: 1 1 200px; }
-  .badge { display: inline-block; border-radius: 999px; padding: 1px 10px; font-size: .82rem; font-weight: 600; border: 1px solid currentColor; white-space: nowrap; }
-  .b-good { color: var(--ok); } .b-late, .b-wait { color: var(--off); } .b-none { color: var(--err); }
-  .adh-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 12px 0 0; }
-  select { font: inherit; padding: 8px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); min-height: 44px; }
-  [hidden] { display: none !important; }
+  .badge { display: inline-block; border-radius: 999px; padding: 2px 12px; font-size: .78rem; font-weight: 600; white-space: nowrap; }
+  .b-good { color: var(--success); background: var(--success-bg); }
+  .b-late, .b-wait { color: var(--warn); background: var(--warn-bg); }
+  .b-none { color: var(--error); background: var(--error-bg); }
+  .adh-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 14px 0 0; }
+  .adh-controls label { margin: 0; }
+  .placeholder { border-style: dashed; }
 </style>
 </head>
 <body>
-<main>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar">
+  <div class="topbar-inner">
+    <span class="wordmark" role="img" aria-label="Pam"></span>
+    <span class="chip">For caregivers</span>
+  </div>
+</header>
+<main id="main">
   <section id="loading" class="card" aria-live="polite"><p class="sub">Checking access…</p></section>
 
   <section id="off" class="card" hidden>
@@ -164,7 +196,7 @@
       <p id="adh-error" class="error" role="alert"></p>
       <div id="adh-days-list" class="days"></div>
     </section>
-    <section class="card" style="border-style:dashed"><h2>Trends</h2>
+    <section class="card placeholder"><h2>Trends</h2>
       <p class="sub">Coming later: how things change over weeks. These are signals to talk through with the doctor, not a diagnosis.</p></section>
   </div>
 </main>
@@ -234,7 +266,7 @@ const DAY_TEXT = {
   complete: ["All marked on time", "b-good"], late: ["Marked, some late", "b-late"],
   pending: ["In progress", "b-wait"], broken: ["A dose has no answer recorded", "b-none"],
 };
-const VIA_TEXT = { voice: "said to Pam", tap: "tapped on the card" };
+const VIA_TEXT = { voice: "said to Pam", tap: "tapped on the card", robot: "recorded when the arm handed over the pills" };
 
 function clock12(hhmm) {                              // "18:05" -> "6:05 PM", with no time zone maths
   const [h, m] = hhmm.split(":").map(Number);
@@ -249,12 +281,13 @@ const badge = (pair) => el("span", pair[0], "badge " + pair[1]);
 function renderAdherence(a) {
   const tile = (label, value) => el("div", null, "tile", [el("div", label, "label"), el("div", value, "value")]);
   const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
-  const voice = a.answers_7d.voice, tap = a.answers_7d.tap;
+  const voice = a.answers_7d.voice, tap = a.answers_7d.tap, robot = a.answers_7d.robot || 0;
   fill($("adh-tiles"),
     tile("Streak", plural(a.streak, "day") + " in a row"),
     tile("Best streak", plural(a.best, "day")),
     tile("Marked on time, last 7 days", a.on_time_rate_7d == null ? "Nothing to show yet" : `${Math.round(a.on_time_rate_7d * 100)}% of doses`),
-    tile("How they answered, last 7 days", voice + tap === 0 ? "No answers yet" : `${voice} said to Pam, ${tap} tapped`));
+    tile("How they answered, last 7 days", voice + tap + robot === 0 ? "No answers yet"
+      : `${voice} said to Pam, ${tap} tapped` + (robot ? `, ${robot} by the arm` : "")));
   if (!a.days.length) {
     return fill($("adh-days-list"), el("div", "Nothing on record yet. Once a schedule is saved and a dose comes due, it shows up here.", "box ask"));
   }
