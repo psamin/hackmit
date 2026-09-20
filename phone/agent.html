@@ -506,13 +506,75 @@ function createVoiceVisual() {
 // ---------------------------------------------------------------------------
 // Microphone: getUserMedia -> AudioWorklet -> Int16 PCM frames -> ws.send
 // ---------------------------------------------------------------------------
+// Noise gate. The worklet used to forward every block unconditionally, so a busy
+// room was transcribed as fast as speech was, and the agent answered the room.
+// echoCancellation and noiseSuppression clean the signal but do not decide when to
+// send, and Deepgram will faithfully transcribe whatever arrives.
+//
+// The threshold is RELATIVE, not absolute: an absolute one is wrong the moment the
+// room changes. A noise floor is tracked continuously -- falling fast so it follows
+// a room going quiet, rising slowly so a sentence never becomes "the new normal" --
+// and the gate opens when the level sits well above it. Two thresholds, open higher
+// than close, so a voice dipping mid-word does not chatter the gate.
+//
+// Two details make the difference between gating and clipping people:
+//   PRE-ROLL, because the gate can only open AFTER a sound starts; without replaying
+//     the moments before, every sentence loses its first consonant and Deepgram
+//     hears "ello" for "hello".
+//   HANGOVER, because the pauses inside a sentence are not the end of it; closing on
+//     the first quiet frame chops speech into fragments and triggers end-of-turn.
 const WORKLET = `
+const OPEN_RATIO = 3.5;     // open when level exceeds the noise floor by this much
+const CLOSE_RATIO = 2.0;    // and stay open until it falls below this (hysteresis)
+const ABS_FLOOR = 0.0016;   // never open on near-silence, whatever the ratio says
+const PRE_ROLL = 24;        // ~190ms of blocks replayed when the gate opens
+const HANGOVER = 55;        // ~440ms of blocks kept open after the level drops
+
 class PCM extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this.floor = 0.01;
+    this.open = false;
+    this.quiet = 0;
+    this.ring = [];
+    this.gateOn = true;
+    this.port.onmessage = (e) => { if (e.data && e.data.gate !== undefined) this.gateOn = !!e.data.gate; };
+  }
+
   process(inputs) {
     const ch = inputs[0] && inputs[0][0];
-    if (ch) { const b = new Int16Array(ch.length);
-      for (let i = 0; i < ch.length; i++) b[i] = Math.max(-1, Math.min(1, ch[i])) * 32767;
-      this.port.postMessage(b.buffer, [b.buffer]); }
+    if (!ch) return true;
+
+    let sum = 0;
+    for (let i = 0; i < ch.length; i++) sum += ch[i] * ch[i];
+    const rms = Math.sqrt(sum / ch.length);
+
+    // Fast down, slow up: the floor chases silence quickly and resists being dragged
+    // up by speech, which is what keeps the ratio meaningful.
+    this.floor = rms < this.floor ? this.floor * 0.90 + rms * 0.10
+                                  : this.floor * 0.9995 + rms * 0.0005;
+    const floor = Math.max(this.floor, ABS_FLOOR);
+
+    if (!this.open && rms > floor * OPEN_RATIO) { this.open = true; this.quiet = 0; }
+    else if (this.open) {
+      if (rms < floor * CLOSE_RATIO) { if (++this.quiet > HANGOVER) this.open = false; }
+      else this.quiet = 0;
+    }
+
+    const pcm = new Int16Array(ch.length);
+    for (let i = 0; i < ch.length; i++) pcm[i] = Math.max(-1, Math.min(1, ch[i])) * 32767;
+
+    if (!this.gateOn || this.open) {
+      // Flush the pre-roll first so the start of the word survives the gate opening.
+      if (this.gateOn && this.ring.length) {
+        for (const b of this.ring) this.port.postMessage(b.buffer, [b.buffer]);
+        this.ring = [];
+      }
+      this.port.postMessage(pcm.buffer, [pcm.buffer]);
+    } else {
+      this.ring.push(pcm);
+      if (this.ring.length > PRE_ROLL) this.ring.shift();
+    }
     return true;
   }
 }
