@@ -258,6 +258,8 @@ const CAPABILITIES = [
   ["get_schedule", "Check your calendar", "Read today's events from your connected calendar.", "What do I have planned today?"],
   ["get_reminders", "Read your reminders", "Hear the reminders you've already saved.", "What are my reminders?"],
   ["set_reminder", "Set a reminder", "Save a reminder. Spoken alerts need Pam to stay open and connected.", "Remind me to call Sarah in ten minutes."],
+  ["get_time_and_place", "Know the day and where you are", "Hear today's date, the time, where you are, and what is next.", "What day is it? Where am I?"],
+  ["check_pills_taken", "Check on your pills", "Hear what is recorded about your pills. Pam cannot see whether you took them, so she only reports what you told her.", "Did I take my pills?"],
   ["get_weather", "Check the weather", "Get the current weather for your saved home location.", "What's the weather like?"],
   ["who_is_this", "Recognise a person", "Name someone the camera can see, if they have been introduced before.", "Who is this?"],
   ["save_face", "Remember a person", "Store the face the camera can see under a name. Nothing is kept until you give one.", "This is my son Jacob."],
@@ -930,6 +932,9 @@ const handlers = {
   get_schedule:  () => api(`/api/calendar`),
   get_reminders: () => api(`/api/reminders`),
   get_weather:   () => api(`/api/weather`),
+  get_time_and_place: () => api(`/api/time-and-place`),
+  check_pills_taken: () => api(`/api/pill-status`),
+  simulate_bottle_moved: () => api(`/api/dose/simulate-evidence`, { method: "POST" }),   // ?demo=1 only
   show_photo:    (a) => api(`/api/photo-info?name=${encodeURIComponent(a.name)}`),
   search_flights:(a) => api(`/api/flights?destination=${encodeURIComponent(a.destination)}&date=${encodeURIComponent(a.date || "")}`),
   set_reminder:  (a) => api(`/api/reminders`, { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(a) }),
@@ -977,11 +982,28 @@ function showCard(c, source = "") {
   const [a1, a2] = els.card.querySelectorAll("a.action");
   for (const [el, act] of [[a1, c.action], [a2, c.action2]]) {
     el.style.display = "none";
-    if (act) { el.textContent = act.label; el.href = act.href; el.style.display = "block"; }
+    el.onclick = null;
+    if (act) {
+      el.textContent = act.label; el.href = act.href || "#"; el.style.display = "block";
+      if (act.post) el.onclick = (ev) => { ev.preventDefault(); cardAction(act); };   // a button that answers Pam
+    }
   }
   els.card.className = "show";
   els.photo.className = "";
   if (currentView !== "talk") $("tab-talk").dataset.new = "true";
+}
+
+// A card button that POSTs an answer (the pill question). The reply is shown and spoken exactly.
+async function cardAction(act) {
+  const out = await api(act.post, { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(act.body || {}) });
+  clearResult();
+  if (out.say) { showCard({ title: "Your pills", body: out.say }); speak(out.say); }
+}
+
+// Have Pam say exactly this. Falls back to the status line when there is no live voice session.
+function speak(text) {
+  if (running && ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "InjectAgentMessage", message: text }));
+  else els.status.textContent = text;
 }
 
 function showPhoto(p) {
@@ -1194,6 +1216,8 @@ es.onmessage = (e) => {
     ws.send(JSON.stringify({ type: "InjectUserMessage", content: m.text }));
   else if (m.type === "say")
     els.status.textContent = m.text;   // not connected — still show it
+  if (m.type === "speak") speak(m.text);   // exact words: the pill prompts are worded on purpose
+  if (m.type === "card") { selectView("talk", true); clearResult(); showCard(m.card); }
 };
 
 // The page greets by time of day; it should feel like it noticed you arrive.
@@ -1246,7 +1270,8 @@ if (location.search.includes("demo")) {
   const tests = {
     find_object:  { item: "pill bottle" }, get_schedule: {}, get_reminders: {},
     who_is_this:  {}, save_face: { name: "Test Person" },
-    get_weather:  {}, show_photo: { name: "Sarah" },
+    get_weather:  {}, get_time_and_place: {}, show_photo: { name: "Sarah" },
+    check_pills_taken: {}, simulate_bottle_moved: {},
     search_flights: { destination: "New York", date: "next Friday" },
     set_reminder: { text: "take your medication", in_minutes: 1 },
     send_message: { to: "Sarah", message: "thinking of you" },

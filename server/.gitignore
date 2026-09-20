@@ -1,0 +1,3 @@
+# Medication check (server/doses.py): a local audit log and a local kill switch, never committed.
+doses.jsonl
+.dose_check_off
