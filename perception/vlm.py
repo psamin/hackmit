@@ -145,6 +145,16 @@ def describe_event(ev, memory_path):
            "vlm_latency_s": round(latency, 2), "input_tokens": resp.usage.input_tokens, "output_tokens": resp.usage.output_tokens}
     with _write_lock, open(memory_path, "a") as f:
         f.write(json.dumps(mem) + "\n")
+    # Mirror into Elasticsearch via the Pam server so the voice agent can search it.
+    # memory.jsonl is still the source of truth; a dead endpoint must not lose the memory.
+    try:
+        import urllib.request
+        urllib.request.urlopen(urllib.request.Request(
+            os.environ.get("PAM_SERVER", "http://127.0.0.1:8000") + "/api/es/index",
+            data=json.dumps(mem).encode(), headers={"Content-Type": "application/json"}),
+            timeout=3)
+    except Exception:
+        pass
     print(f"event {ev['id']}: {mem['event']} {mem['object']} -> {mem['location_description']} ({latency:.1f}s)", flush=True)
     return mem
 

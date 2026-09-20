@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<!--
+  Pam — the voice agent. One page on the same HTTPS origin as the camera page.
+
+  Talk path:   mic -> PCM16 -> wss://agent.deepgram.com/v1/agent/converse -> audio back
+  Action path: Deepgram sends FunctionCallRequest -> this page executes it
+               (in-page UI or fetch to the laptop) -> FunctionCallResponse.
+
+  No build step: the Agent wire protocol is small enough to hold in one file,
+  which keeps every byte debuggable. Token auth rides the WebSocket subprotocol
+  header, the only header browsers allow.
+
+  ?demo=1 shows a test panel that calls each function handler directly, so the
+  whole action layer is verifiable before any voice session exists.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Pam</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: #14181d; color: #f2f4f6;
+    font: 18px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    display: flex; flex-direction: column; min-height: 100dvh;
+  }
+  header { padding: 16px 20px; font-size: 22px; font-weight: 700; display: flex; align-items: baseline; gap: 10px; }
+  header small { font-size: 13px; color: #7d8a97; font-weight: 400; }
+  main { flex: 1; display: flex; flex-direction: column; align-items: center; padding: 0 16px 16px; gap: 18px; }
+  #talk {
+    width: 150px; height: 150px; border-radius: 50%; border: 0; flex: none;
+    font-size: 19px; font-weight: 700; color: #fff; background: #2f6fed;
+    transition: transform .15s, background .3s;
+  }
+  #talk.listening { background: #1f9d55; transform: scale(1.05); }
+  #talk.speaking  { background: #7b5cf0; }
+  #talk[disabled] { background: #3a424c; color: #7d8a97; }
+  #status { font-size: 17px; color: #9fb0bf; text-align: center; min-height: 1.5em; }
+  #card {
+    width: 100%; max-width: 420px; background: #1e252e; border-radius: 16px;
+    padding: 20px; display: none; flex-direction: column; gap: 12px;
+    border: 1px solid #2c3642;
+  }
+  #card.show { display: flex; }
+  #card .title { font-size: 20px; font-weight: 700; }
+  #card .body  { font-size: 17px; color: #b8c4cf; }
+  #card img { width: 100%; border-radius: 10px; }
+  #card a.action {
+    display: block; text-align: center; padding: 18px; border-radius: 12px;
+    background: #1f9d55; color: #fff; font-size: 20px; font-weight: 700; text-decoration: none;
+  }
+  #card a.action.secondary { background: #3a424c; }
+  #photo { width: 100%; max-width: 420px; display: none; }
+  #photo.show { display: block; }
+  #photo img { width: 100%; border-radius: 14px; }
+  #photo .cap { font-size: 20px; font-weight: 700; text-align: center; padding-top: 8px; }
+  #log { width: 100%; max-width: 420px; font-size: 14px; color: #63707e; white-space: pre-wrap; }
+  #log .u { color: #9fb0bf; } #log .a { color: #b9a7f5; }
+  #demo { display: none; width: 100%; max-width: 420px; flex-wrap: wrap; gap: 8px; }
+  #demo.show { display: flex; }
+  #demo button { flex: 1 1 45%; padding: 10px; border: 0; border-radius: 8px; background: #2c3642; color: #d7dee6; font-size: 13px; }
+</style>
+</head>
+<body>
+<header>Pam <small id="conn">offline</small></header>
+<main>
+  <div id="photo"><img><div class="cap"></div></div>
+  <div id="card"><div class="title"></div><div class="body"></div><img style="display:none"><a class="action" style="display:none"></a><a class="action secondary" style="display:none"></a></div>
+  <button id="talk">Talk to Pam</button>
+  <div id="status">tap the button, then just talk</div>
+  <div id="demo"></div>
+  <div id="log"></div>
+</main>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const els = { talk: $("talk"), status: $("status"), conn: $("conn"), card: $("card"),
+              photo: $("photo"), log: $("log"), demo: $("demo") };
+const DG_URL = "wss://agent.deepgram.com/v1/agent/converse";
+// ?dg=ws://127.0.0.1:8000/api/fake-dg tests the whole client path against the
+// server's fake agent — no API key needed.
+const DG_OVERRIDE = new URLSearchParams(location.search).get("dg");
+
+let ws = null, mic = null, player = null, running = false, wakeLock = null;
+
+// ---------------------------------------------------------------------------
+// Microphone: getUserMedia -> AudioWorklet -> Int16 PCM frames -> ws.send
+// ---------------------------------------------------------------------------
+const WORKLET = `
+class PCM extends AudioWorkletProcessor {
+  process(inputs) {
+    const ch = inputs[0] && inputs[0][0];
+    if (ch) { const b = new Int16Array(ch.length);
+      for (let i = 0; i < ch.length; i++) b[i] = Math.max(-1, Math.min(1, ch[i])) * 32767;
+      this.port.postMessage(b.buffer, [b.buffer]); }
+    return true;
+  }
+}
+registerProcessor("pcm", PCM);`;
+
+async function startMic() {
+  const stream = await navigator.mediaDevices.getUserMedia({
+    audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+  const ctx = new AudioContext({ sampleRate: 16000 });
+  const url = URL.createObjectURL(new Blob([WORKLET], { type: "application/javascript" }));
+  await ctx.audioWorklet.addModule(url);
+  const node = new AudioWorkletNode(ctx, "pcm");
+  node.port.onmessage = (e) => { if (ws && ws.readyState === WebSocket.OPEN) ws.send(e.data); };
+  ctx.createMediaStreamSource(stream).connect(node);
+  return { ctx, stream, node };
+}
+
+// ---------------------------------------------------------------------------
+// Playback: incoming linear16 @24k chunks -> Float32 -> scheduled AudioBuffers.
+// ---------------------------------------------------------------------------
+function makePlayer() {
+  const ctx = new AudioContext({ sampleRate: 24000 });
+  let at = 0, sources = [];
+  return {
+    ctx,
+    play(buf) {
+      const pcm = new Int16Array(buf);
+      const f = new Float32Array(pcm.length);
+      for (let i = 0; i < pcm.length; i++) f[i] = pcm[i] / 32768;
+      const ab = ctx.createBuffer(1, f.length, 24000);
+      ab.copyToChannel(f, 0);
+      const src = ctx.createBufferSource();
+      src.buffer = ab; src.connect(ctx.destination);
+      at = Math.max(at, ctx.currentTime);
+      src.start(at); at += ab.duration; sources.push(src);
+      src.onended = () => sources = sources.filter(s => s !== src);
+    },
+    stop() { sources.forEach(s => { try { s.stop(); } catch {} }); sources = []; at = 0; },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// The voice session
+// ---------------------------------------------------------------------------
+async function start() {
+  els.status.textContent = "waking Pam up…";
+  try {
+    const token = DG_OVERRIDE ? "test" : await (await fetch("/api/dg-token")).text();
+    if (token.startsWith("{")) throw new Error(JSON.parse(token).error);
+    const config = await (await fetch("/api/agent-config")).json();
+
+    ws = new WebSocket(DG_OVERRIDE || DG_URL, ["token", token]);
+    ws.binaryType = "arraybuffer";
+    ws.onopen = () => ws.send(JSON.stringify({ type: "Settings", audio: {
+      input:  { encoding: "linear16", sample_rate: 16000 },
+      output: { encoding: "linear16", sample_rate: 24000 } }, agent: config }));
+    ws.onmessage = (m) => (typeof m.data === "string" ? onControl(JSON.parse(m.data)) : player.play(m.data));
+    ws.onerror = ws.onclose = () => { if (running) { say("connection lost — tap to restart"); stop(); } };
+
+    mic = await startMic();
+    player = makePlayer();
+    await player.ctx.resume();            // audio unlock: we are inside the Start gesture
+    running = true;
+    els.talk.textContent = "Listening";
+    els.talk.className = "listening";
+    els.conn.textContent = "connected";
+    els.status.textContent = "go ahead, I'm listening";
+    try { wakeLock = await navigator.wakeLock.request("screen"); } catch {}
+  } catch (e) {
+    say(e.message || "couldn't start", true);
+    stop();
+  }
+}
+
+function onControl(m) {
+  switch (m.type) {
+    case "ConversationText":
+      log(m.role === "user" ? "u" : "a", m.content); break;
+    case "UserStartedSpeaking":
+      player.stop(); els.talk.className = "listening"; break;
+    case "AgentThinking":
+      els.talk.className = "speaking"; break;
+    case "AgentStartedSpeaking":
+      els.talk.className = "speaking"; break;
+    case "AgentAudioDone":
+      els.talk.className = "listening"; break;
+    case "FunctionCallRequest":
+      for (const f of m.functions) runFunction(f); break;
+    case "Error": case "Warning":
+      say(m.description || m.type, true); break;
+  }
+}
+
+function stop() {
+  running = false;
+  if (ws && ws.readyState === WebSocket.OPEN) ws.close();
+  ws = null;
+  if (mic) { mic.stream.getTracks().forEach(t => t.stop()); mic.ctx.close(); mic = null; }
+  if (player) { player.stop(); player.ctx.close(); player = null; }
+  if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
+  els.talk.textContent = "Talk to Pam"; els.talk.className = "";
+  els.conn.textContent = "offline";
+}
+
+els.talk.onclick = () => (running ? stop() : start());
+
+// ---------------------------------------------------------------------------
+// Client-side functions. Each handler returns { say, card?, photo? } — `say`
+// goes back to Deepgram as the FunctionCallResponse content; card/photo render
+// on screen. This is the entire agentic surface.
+// ---------------------------------------------------------------------------
+const api = async (url, opts) => {
+  const r = await fetch(url, opts);
+  const j = await r.json().catch(() => ({}));
+  return r.ok ? j : { say: `Sorry, that didn't work. (${j.error || r.status})` };
+};
+
+const handlers = {
+  find_object:   (a) => api(`/api/find?q=${encodeURIComponent(a.item)}`),
+  get_schedule:  () => api(`/api/calendar`),
+  get_reminders: () => api(`/api/reminders`),
+  get_weather:   () => api(`/api/weather`),
+  show_photo:    (a) => api(`/api/photo-info?name=${encodeURIComponent(a.name)}`),
+  search_flights:(a) => api(`/api/flights?destination=${encodeURIComponent(a.destination)}&date=${encodeURIComponent(a.date || "")}`),
+  set_reminder:  (a) => api(`/api/reminders`, { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(a) }),
+  send_message:  (a) => api(`/api/message`, { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(a) }),
+  call_contact:  (a) => api(`/api/call`, { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(a) }),
+  call_caregiver:() => api(`/api/call`, { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({ name: "__caregiver__" }) }),
+  request_ride:  (a) => api(`/api/ride`, { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(a) }),
+  fetch_object:  (a) => api(`/api/fetch`, { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(a) }),
+};
+
+async function runFunction(f) {
+  const handler = handlers[f.name];
+  let out;
+  try { out = handler ? await handler(JSON.parse(f.arguments || "{}")) : { say: `I don't know how to do ${f.name} yet.` }; }
+  catch (e) { out = { say: "Sorry, something went wrong." }; }
+  if (out.card)  showCard(out.card);
+  if (out.photo) showPhoto(out.photo);
+  if (ws && ws.readyState === WebSocket.OPEN)
+    ws.send(JSON.stringify({ type: "FunctionCallResponse", id: f.id, name: f.name,
+                             content: out.say || "Done." }));
+}
+
+// ---------------------------------------------------------------------------
+// Screen output: confirmation cards + photos. The tap IS the consent.
+// ---------------------------------------------------------------------------
+function showCard(c) {
+  els.card.querySelector(".title").textContent = c.title || "";
+  els.card.querySelector(".body").textContent = c.body || "";
+  const img = els.card.querySelector("img");
+  img.style.display = "none";
+  if (c.image) { img.src = c.image; img.style.display = "block"; }
+  const [a1, a2] = els.card.querySelectorAll("a.action");
+  for (const [el, act] of [[a1, c.action], [a2, c.action2]]) {
+    el.style.display = "none";
+    if (act) { el.textContent = act.label; el.href = act.href; el.style.display = "block"; }
+  }
+  els.card.className = "show";
+}
+
+function showPhoto(p) {
+  els.photo.querySelector("img").src = p.url;
+  els.photo.querySelector(".cap").textContent = p.caption || "";
+  els.photo.className = "show";
+}
+
+// ---------------------------------------------------------------------------
+// Pushed messages (reminders firing, "the arm is done") -> spoken by Pam.
+// ---------------------------------------------------------------------------
+const es = new EventSource("/api/push");
+es.onmessage = (e) => {
+  const m = JSON.parse(e.data);
+  if (m.type === "say" && ws && ws.readyState === WebSocket.OPEN)
+    ws.send(JSON.stringify({ type: "InjectUserMessage", content: m.text }));
+  else if (m.type === "say")
+    els.status.textContent = m.text;   // not connected — still show it
+};
+
+// ---------------------------------------------------------------------------
+function say(msg, isErr) { els.status.textContent = msg; els.status.style.color = isErr ? "#f77" : ""; }
+function log(cls, text) {
+  const d = document.createElement("div");
+  d.className = cls; d.textContent = (cls === "u" ? "You: " : "Pam: ") + text;
+  els.log.prepend(d);
+}
+
+// ?demo=1 — a button per function so every feature is testable with no voice.
+if (location.search.includes("demo")) {
+  els.demo.className = "show";
+  const tests = {
+    find_object:  { item: "pill bottle" }, get_schedule: {}, get_reminders: {},
+    get_weather:  {}, show_photo: { name: "Sarah" },
+    search_flights: { destination: "New York", date: "next Friday" },
+    set_reminder: { text: "take your medication", in_minutes: 1 },
+    send_message: { to: "Sarah", message: "thinking of you" },
+    call_contact: { name: "Sarah" }, call_caregiver: {},
+    request_ride: { destination: "airport" }, fetch_object: { item: "pill bottle" },
+  };
+  for (const [name, args] of Object.entries(tests)) {
+    const b = document.createElement("button");
+    b.textContent = name;
+    b.onclick = async () => {
+      const out = await handlers[name](args);
+      if (out.card) showCard(out.card);
+      if (out.photo) showPhoto(out.photo);
+      log("a", out.say || "(no response)");
+    };
+    els.demo.appendChild(b);
+  }
+}
+</script>
+</body>
+</html>
