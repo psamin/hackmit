@@ -992,15 +992,30 @@ async def fetch_item(body: dict):
         from vla.arm_client import fetch
         arm_url = os.environ.get("ARM_URL") or "http://127.0.0.1:8020"
         status = await asyncio.to_thread(fetch, arm_url)
+        if not status["active"]:
+            # The technical reason goes to the terminal; the person hears something they
+            # can act on, not the arm's error string.
+            log("ARM", f"fetch refused: {status.get('last_error')}")
+            return {"say": "I can't get that for you right now. Ask your helper to check the arm."}
+        # The hand-over IS the dose, by product decision -- see doses.confirm_by_robot,
+        # which documents what that costs. Only for medication: fetching the TV remote
+        # must not mark pills as taken.
         item = str(body.get("item") or "")
-        if status["active"] and doses.voice_confirm_enabled() and doses.is_pill_item(item):
+        recorded = False
+        if doses.enabled() and doses.MEDICATION.search(item or "pills"):
+            recorded = (await asyncio.to_thread(doses.confirm_by_robot)).get("recorded", False)
+            log("ARM", f"fetch({body.get('item')!r}) -> dose recorded as taken: {recorded}")
+        # When the hand-over did not settle the dose, Pam asks the person afterwards whether they took the pills
+        # (see doses.record_handoff). If it did, there is nothing left to ask, so there is nothing to watch for.
+        if not recorded and doses.voice_confirm_enabled() and doses.is_pill_item(item):
             try:
                 from vla.arm_client import arm
                 _watch_handoff(item, lambda: arm("status", arm_url))
             except Exception as exc:  # noqa: BLE001 - not being able to watch must never make the fetch look like it failed
                 log("ARM", f"could not watch for the handoff: {type(exc).__name__}: {exc}")
-        return {"say": "I'm getting it for you — the arm is on its way." if status["active"]
-                else f"I can't start the arm right now: {status.get('last_error', 'it says no')}"}
+        return {"say": "I'm getting it for you — the arm is on its way." +
+                       (" I've noted that as your pills taken." if recorded else ""),
+                "dose_recorded": recorded}
     except Exception:
         return {"say": "I can't reach the arm right now — but I remember where it is if that helps."}
 
@@ -1030,10 +1045,11 @@ async def open_camera_relay():
 async def camera_stream(ws: WebSocket):
     origin = ws.headers.get("origin")
     if origin and urlsplit(origin).netloc != ws.headers.get("host"):
-        print(f"Camera origin mismatch: origin={urlsplit(origin).netloc!r}, host={ws.headers.get('host')!r}", flush=True)
+        log("CAMERA", f"origin mismatch: origin={urlsplit(origin).netloc!r} host={ws.headers.get('host')!r} "
+                      f"-- open the laptop's own address, not an IDE preview proxy")
         await ws.accept()
         await ws.send_json({"type": "camera_error", "retry": False,
-                            "message": "This page's address is blocking the camera connection. Open Pam directly at http://127.0.0.1:8000/ on your laptop, or the laptop's HTTPS address on your phone, not the IDE preview."})
+                            "message": "Pam can't use the camera from this page. Ask your helper to open Pam's usual address."})
         await ws.close(code=1008)
         return
     await ws.accept()
@@ -1065,10 +1081,12 @@ async def camera_stream(ws: WebSocket):
             task.result()
     except ssl.SSLCertVerificationError:
         with suppress(RuntimeError, WebSocketDisconnect):
-            await ws.send_json({"type": "camera_error", "message": "The camera relay certificate does not match Pam's certificate. Ask your helper to restart the pipeline with phone/cert.pem."})
+            log("CAMERA", "relay TLS mismatch: restart memory_pipeline with --cert phone/cert.pem --key phone/key.pem")
+            await ws.send_json({"type": "camera_error", "message": "Pam can't reach the camera service. Ask your helper to check the laptop."})
     except (OSError, TimeoutError, ValueError, ConnectionClosed, InvalidHandshake):
         with suppress(RuntimeError, WebSocketDisconnect):
-            await ws.send_json({"type": "camera_error", "message": "Camera is on, but the memory pipeline is unavailable. Ask your helper to start the pipeline on the laptop. Pam will retry automatically."})
+            log("CAMERA", "relay unreachable on 8765: is memory_pipeline running with --source wss://0.0.0.0:8765 ?")
+            await ws.send_json({"type": "camera_error", "message": "Your camera is on, but Pam isn't receiving it yet. Ask your helper to check the laptop. Pam will keep trying."})
     except WebSocketDisconnect:
         pass
     finally:
