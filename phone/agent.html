@@ -23,254 +23,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Pam</title>
-<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#0d1720" media="(prefers-color-scheme: dark)">
-<style>
-  :root {
-    color-scheme: light dark; font-size: clamp(17px, 4.2vw, 19px);
-    --bg: #ffffff; --paper: #f5f8fb; --ink: #0f1f2e; --slate: #56677a; --line: #dfe7ee;
-    --blue: #1e63b8; --blue-deep: #17509a; --blue-mist: #e8f0fa; --blue-text: #17509a; --on-blue: #ffffff;
-    --error: #b3261e; --success: #1e7a4c; --shadow: #10345a12;
-    --ease: cubic-bezier(.23,1,.32,1);
-    --nav-h: 72px;
-  }
-  * { box-sizing: border-box; }
-  body { margin: 0; height: 100dvh; overflow: hidden; display: flex; flex-direction: column; background: var(--bg); color: var(--ink); font: 1rem/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; }
-  button, input, summary, a { -webkit-tap-highlight-color: transparent; }
-  button, input { font: inherit; color: inherit; }
-  button, a.action, summary { cursor: pointer; touch-action: manipulation; }
-  button { border: 0; background: none; padding: 0; }
-  button:active { transform: scale(.985); }
-  button:disabled { opacity: .5; cursor: default; }
-  :focus-visible { outline: 3px solid var(--blue); outline-offset: 3px; }
-  [hidden] { display: none !important; }
-  h1, h2, h3, p { margin: 0; }
-  .display { font-family: ui-rounded, "SF Pro Rounded", "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif; letter-spacing: -.03em; }
-  .skip { position: fixed; transform: translateY(-160%); padding: 14px; background: var(--bg); z-index: 5; }
-  .skip:focus { transform: none; }
-  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-  .col { width: min(100%, 760px); margin-inline: auto; padding-inline: 0; }
-  .topbar-inner { width: min(1180px, 100%); margin-inline: auto; padding-inline: 24px; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
-  .workspace { width: min(1180px, 100%); margin-inline: auto; flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 264px; gap: 24px; padding: 24px 24px 18px; margin-bottom: calc(var(--nav-h) + env(safe-area-inset-bottom)); }
-  .icon { width: 24px; height: 24px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
-  .icon-definitions { position: absolute; width: 0; height: 0; overflow: hidden; }
-
-  /* Top bar */
-  .topbar { flex: none; z-index: 3; display: flex; justify-content: space-between; align-items: center; gap: 12px; min-height: 64px; border-bottom: 1px solid var(--line); background: var(--bg); }
-  .wordmark { display: block; width: 78px; aspect-ratio: 592 / 215; background-color: var(--blue); -webkit-mask: url("/assets/pam-logo.png") center / contain no-repeat; mask: url("/assets/pam-logo.png") center / contain no-repeat; }
-  .topbar-actions { display: flex; align-items: center; gap: 8px; }
-  .chip { min-height: 44px; padding: 8px 16px; border: 1px solid var(--line); border-radius: 999px; background: var(--bg); color: var(--blue-text); font-size: .85rem; font-weight: 600; }
-  .settings { position: relative; }
-  .settings > summary { list-style: none; display: grid; place-items: center; width: 44px; height: 44px; border: 1px solid var(--line); border-radius: 50%; background: var(--bg); color: var(--ink); font-size: .85rem; font-weight: 600; }
-  .settings > summary::-webkit-details-marker { display: none; }
-  .settings-panel { position: absolute; top: calc(100% + 8px); right: 0; width: min(340px, 88vw); max-height: calc(100dvh - 100px); overflow-y: auto; border: 1px solid var(--line); border-radius: 16px; background: var(--bg); padding: 8px 18px 16px; box-shadow: 0 16px 40px var(--shadow); z-index: 4; }
-  .settings-panel h2 { font-size: .95rem; padding: 12px 0 4px; }
-  .settings-panel label { display: flex; align-items: center; justify-content: space-between; min-height: 52px; gap: 12px; font-size: .9rem; cursor: pointer; border-top: 1px solid var(--line); }
-  .settings-panel label:first-of-type { border-top: 0; }
-  input[type=checkbox] { width: 22px; height: 22px; flex: none; accent-color: var(--blue); }
-  .settings-panel p { color: var(--slate); font-size: .78rem; margin-top: 10px; }
-
-  /* Main scroll region above the flat tab bar */
-  main { position: relative; z-index: 1; min-width: 0; min-height: 0; overflow-y: auto; scrollbar-width: thin; padding: 2px 4px 16px; }
-  main > section { display: flex; flex-direction: column; gap: 16px; }
-  main > section[hidden] { display: none; }
-  .talk-heading { padding: 2px 4px 4px; }
-  .voice-panel { background: var(--paper); border: 1px solid var(--line); border-radius: 28px; padding: 24px; }
-  .voice-footer { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 0 4px; font-size: .8rem; color: var(--slate); }
-  .voice-footer button { min-height: 44px; padding-inline: 8px; font-size: .8rem; color: var(--blue-text); font-weight: 600; }
-  .new-memory-note { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-  /* Talk: voice stage. It grows to absorb spare height so tall phones don't
-     leave a dead gap above the tab bar; the sphere is sized from that space. */
-  .stage { text-align: center; display: grid; justify-items: stretch; gap: 12px; }
-  h1 { font-size: clamp(1.4rem, 4.5vw, 1.8rem); font-weight: 600; line-height: 1.2; }
-  .intro { color: var(--slate); font-size: .9rem; margin-top: 6px; }
-  .voice-state { justify-self: center; }
-  .visual-zone { height: clamp(104px, 24dvh, 230px); display: grid; place-items: center; overflow: clip; contain: paint; }
-  .subtitle-area { display: grid; align-content: center; justify-items: stretch; min-width: 0; }
-  #subtitle-window { --caption-line: 30px; line-height: var(--caption-line); max-height: calc(var(--caption-line) * 5); overflow: hidden; font-size: clamp(1.05rem, 1.8vw, 1.2rem); color: var(--ink); overflow-wrap: anywhere; text-align: center; }
-  #subtitle-text { margin: 0; line-height: inherit; }
-  #subtitle-placeholder { color: var(--slate); font-size: 1rem; line-height: 1.6; max-width: 34ch; margin: auto; }
-  #subtitle-window:empty { display: none; }
-  /* The sphere is sized from the space the stage really has, on every resize.
-     It is a flex child that can give up height (min-height: 0) so the text and
-     controls around it always win; the sphere is the thing that shrinks. */
-  .orb-scene { position: relative; width: clamp(64px, 16dvh, 168px); height: clamp(64px, 16dvh, 168px); flex: none; margin: 0; aspect-ratio: 1; }
-  #view-talk > .response-area { flex: none; }
-  #voice-orb { position: absolute; inset: 0; width: 100%; height: 100%; }
-  .orb-fallback { position: absolute; inset: 6%; border-radius: 50%; background: radial-gradient(circle at 32% 26%, #ffffff 0%, #eef5fd 22%, #b4d3f2 50%, #4f8fd6 76%, #1e63b8 100%); box-shadow: inset -10px -14px 24px #0f345a33, inset 8px 10px 18px #ffffffb3; }
-  .orb-ring { position: absolute; inset: 1px; border-radius: 50%; border: 1.5px solid var(--blue); opacity: 0; transition: opacity 220ms var(--ease); pointer-events: none; }
-  body[data-voice="listening"] .orb-ring, body[data-voice="speaking"] .orb-ring { opacity: .9; }
-  body[data-voice="thinking"] .orb-ring, body[data-voice="connecting"] .orb-ring { opacity: .45; border-style: dashed; }
-  .voice-state { display: inline-flex; align-items: center; gap: 8px; font-size: .82rem; font-weight: 600; color: var(--slate); }
-  .voice-state::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--line); }
-  body:is([data-voice="listening"], [data-voice="speaking"]) .voice-state { color: var(--blue-text); }
-  body:is([data-voice="listening"], [data-voice="speaking"]) .voice-state::before { background: var(--blue); }
-  #status { color: var(--slate); max-width: 48ch; min-height: 1.5em; margin: 14px auto 0; font-size: .8rem; text-align: center; overflow-wrap: anywhere; }
-  #status.error, #cam.err { color: var(--error); }
-
-  /* Talk: actions */
-  .actions { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 10px; margin-top: 24px; align-items: stretch; }
-  .actions:has(#mic-toggle:not([hidden])) { grid-template-columns: 64px minmax(0, 1fr) auto; }
-  #features-open { display: grid; justify-items: center; align-content: center; gap: 3px; min-height: 56px; border: 1px solid var(--line); border-radius: 18px; color: var(--blue-text); background: var(--bg); }
-  #features-open span { font-size: .68rem; font-weight: 600; }
-  #features-open .icon { width: 22px; height: 22px; }
-  #talk { min-height: 62px; min-width: 0; padding-inline: 12px; border-radius: 999px; background: var(--blue); color: var(--on-blue); font-size: 1rem; font-weight: 600; white-space: nowrap; transition: transform 120ms var(--ease); }
-  #talk.listening, #talk.speaking, #talk:disabled { background: var(--blue-deep); }
-  #mic-toggle { min-height: 62px; min-width: 62px; padding: 0 18px; border: 1px solid var(--line); border-radius: 999px; background: var(--bg); color: var(--blue-text); font-size: .85rem; font-weight: 600; white-space: nowrap; }
-  #mic-toggle[aria-pressed="true"] { background: var(--blue-mist); border-color: var(--blue); }
-
-  /* Grouped lists (the medical-app row pattern) */
-  .list { margin-top: 18px; border: 1px solid var(--line); border-radius: 18px; background: var(--paper); overflow: hidden; }
-  .row { display: flex; align-items: center; justify-content: space-between; gap: 14px; width: 100%; min-height: 60px; padding: 12px 18px; text-align: left; border-top: 1px solid var(--line); border-radius: 0; background: transparent; color: var(--ink); font-weight: 600; font-size: .95rem; }
-  .row:first-child { border-top: 0; }
-  .row .row-sub { display: block; color: var(--slate); font-size: .8rem; font-weight: 400; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .row .chev { color: var(--slate); font-size: 1.4rem; line-height: 1; font-weight: 400; flex: none; }
-  .row .thumb { width: 52px; height: 52px; flex: none; border-radius: 12px; object-fit: cover; background: var(--line); }
-  .row .row-main { flex: 1; min-width: 0; overflow-wrap: anywhere; }
-  .row .row-main strong { display: block; }
-
-  /* Answer card */
-  .response-area { border: 1px solid var(--line); border-radius: 24px; background: var(--bg); overflow: hidden; }
-  .response-area:not(:has(#card.show, #photo.show)) { display: none; }
-  .result-heading { display: flex; align-items: center; justify-content: space-between; padding: 8px 16px 0 20px; font-size: .8rem; color: var(--slate); }
-  #result-close { min-height: 44px; min-width: 44px; font-size: .85rem; font-weight: 600; color: var(--blue-text); }
-  #card, #photo { display: none; flex-direction: column; text-align: left; padding: 18px 20px 20px; gap: 12px; }
-  #card.show, #photo.show { display: flex; }
-  #card .title, #photo .cap { font-size: 1.05rem; font-weight: 650; }
-  #card .body { color: var(--slate); font-size: .92rem; white-space: pre-line; overflow-wrap: anywhere; }
-  #card img, #photo img { width: 100%; aspect-ratio: 16 / 9; max-height: 300px; object-fit: contain; border-radius: 16px; background: var(--paper); }
-  a.action { display: block; min-height: 56px; display: flex; align-items: center; justify-content: center; border-radius: 999px; background: var(--blue); color: var(--on-blue); text-decoration: none; font-size: .95rem; font-weight: 600; }
-  a.action.secondary { background: var(--bg); color: var(--blue-text); border: 1px solid var(--line); }
-
-  .conversation { margin-top: 10px; }
-  .conversation summary { min-height: 48px; display: flex; align-items: center; justify-content: center; font-size: .85rem; font-weight: 600; color: var(--slate); }
-  #log { max-height: 320px; overflow: auto; overflow-wrap: anywhere; font-size: .9rem; display: grid; gap: 8px; padding: 4px 0 8px; }
-  #log:empty::before { content: "Your conversation will appear here when you talk with Pam."; color: var(--slate); }
-  #log > div { border-radius: 14px; padding: 12px 14px; background: var(--paper); }
-  #log .u { background: var(--blue-mist); color: var(--ink); margin-left: 24px; }
-
-  /* Memories & camera views */
-  .view-heading { margin: 4px 0 16px; }
-  .view-heading h2 { font-size: 1.45rem; font-weight: 600; }
-  .lead { color: var(--slate); margin-top: 4px; font-size: .92rem; }
-  .record { display: flex; gap: 14px; align-items: flex-start; padding: 16px 18px; border: 1px solid var(--line); border-radius: 18px; background: var(--paper); }
-  .record img { width: 64px; height: 64px; border-radius: 12px; object-fit: cover; flex: none; background: var(--line); }
-  .record > div { min-width: 0; }
-  #memory-title { display: block; font-size: 1rem; font-weight: 650; }
-  #memory-detail { color: var(--slate); margin-top: 4px; font-size: .92rem; overflow-wrap: anywhere; }
-  #memory-time { display: block; color: var(--slate); font-size: .78rem; margin-top: 8px; }
-  .feed-state { margin-top: 10px; color: var(--slate); font-size: .78rem; }
-  .search-field { display: grid; gap: 8px; margin-top: 20px; font-size: .85rem; font-weight: 600; }
-  .search-field input { width: 100%; min-height: 54px; padding: 12px 18px; border: 1px solid var(--line); border-radius: 999px; background: var(--bg); }
-  .search-field input:focus { border-color: var(--blue); outline: none; box-shadow: 0 0 0 3px var(--blue-mist); }
-  input::placeholder { color: var(--slate); opacity: 1; }
-  #memory-history { list-style: none; margin: 14px 0 0; padding: 0; border: 1px solid var(--line); border-radius: 18px; background: var(--paper); overflow: hidden; }
-  #memory-history li + li { border-top: 1px solid var(--line); }
-  #memory-history li:not(:has(button)) { padding: 16px 18px; color: var(--slate); font-size: .9rem; }
-  #memory-history .row { border-top: 0; font-weight: 400; }
-  #memory-history .row strong { font-weight: 600; }
-  .panel { padding: 18px 20px 20px; border: 1px solid var(--line); border-radius: 18px; background: var(--bg); }
-  .panel h3 { font-size: 1.05rem; font-weight: 650; }
-  #cam { display: flex; align-items: center; gap: 10px; color: var(--slate); margin-top: 8px; font-size: .92rem; overflow-wrap: anywhere; }
-  #cam::before { content: ""; width: 10px; height: 10px; border-radius: 50%; background: var(--line); flex: none; }
-  #cam.on { color: var(--success); } #cam.on::before { background: var(--success); }
-  #cam.err::before { background: var(--error); }
-  .camera-controls { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
-  .camera-controls button { flex: 1; min-height: 56px; border-radius: 999px; font-weight: 600; font-size: .95rem; }
-  #camera-start { background: var(--blue); color: var(--on-blue); }
-  #camera-stop { background: var(--bg); color: var(--blue-text); border: 1px solid var(--line); }
-  #camera-details { margin-top: 10px; }
-  #camera-details summary { min-height: 48px; display: flex; align-items: center; font-size: .88rem; font-weight: 600; color: var(--blue-text); }
-  #camera-preview { display: block; width: 100%; height: 100%; object-fit: cover; background: var(--blue-mist); }
-  .privacy { color: var(--slate); font-size: .85rem; margin-top: 12px; }
-
-  /* Flat tab bar */
-  .bottom-nav { position: fixed; z-index: 4; left: 0; right: 0; bottom: 0; height: calc(var(--nav-h) + env(safe-area-inset-bottom)); padding: 8px 12px calc(8px + env(safe-area-inset-bottom)); background: var(--bg); border-top: 1px solid var(--line); }
-  .bottom-nav .tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; width: min(100%, 520px); margin-inline: auto; height: 100%; }
-  .bottom-nav button { min-height: 56px; border-radius: 14px; color: var(--slate); font-size: .85rem; font-weight: 600; white-space: nowrap; position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 6px; line-height: 1; }
-  .bottom-nav button[aria-selected="true"] { color: var(--blue-text); background: var(--blue-mist); }
-  .bottom-nav button[data-new="true"]::after { content: ""; width: 7px; height: 7px; background: var(--blue); border-radius: 50%; position: absolute; right: 12px; top: 10px; }
-  /* Camera state rides beside the label as a tiny dot + word, so all three tabs stay one line tall. */
-  .camera-badge { display: inline-flex; align-items: center; gap: 4px; font-size: .68rem; font-weight: 500; color: var(--slate); }
-  .camera-badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--line); }
-  .camera-badge.on::before { background: var(--success); }
-  .camera-badge.err::before { background: var(--error); }
-  .bottom-nav button[aria-selected="true"] .camera-badge { color: var(--blue-text); }
-
-  #demo { display: none; gap: 10px; flex-wrap: wrap; margin-top: 20px; padding-inline: 20px; }
-  #demo.show { display: flex; }
-  #demo button { font-size: .8rem; min-height: 44px; padding: 8px 14px; border: 1px solid var(--line); border-radius: 999px; }
-
-  /* Memory saved: one soft sweep of light, nothing else moves */
-  #memory-shine { position: fixed; inset: 0; z-index: 0; overflow: hidden; pointer-events: none; }
-  #memory-shine::after { content: ""; position: absolute; inset: -30% -50%; opacity: 0; background: linear-gradient(110deg, transparent 40%, #1e63b80d 47%, #ffffff99 50%, #1e63b80d 53%, transparent 60%); }
-  @keyframes memory-shine { 0% { transform: translateX(-55%); opacity: 0; } 25%, 75% { opacity: 1; } 100% { transform: translateX(55%); opacity: 0; } }
-  @media (prefers-reduced-motion: no-preference) { html:not([data-effects="off"]) #memory-shine.shine::after { animation: memory-shine 1500ms cubic-bezier(.45,0,.2,1) 1; } }
-  @media (hover: hover) and (pointer: fine) { .row:hover, .chip:hover, .settings > summary:hover, #mic-toggle:hover, #camera-stop:hover { background: var(--blue-mist); } #talk:hover, #camera-start:hover { background: var(--blue-deep); } .bottom-nav button:not([aria-selected="true"]):hover { color: var(--blue-text); } }
-
-  @media (prefers-color-scheme: dark) {
-    :root { --bg: #0d1720; --paper: #142130; --ink: #eef3f8; --slate: #a9b8c7; --line: #26384a; --blue: #7db6f0; --blue-deep: #5ea4ea; --blue-mist: #1a3352; --blue-text: #9cc8f5; --on-blue: #0b1e33; --shadow: #00000066; }
-    .orb-fallback { background: radial-gradient(circle at 32% 26%, #ffffff 0%, #dbeafc 22%, #7db6f0 50%, #2f6fb5 76%, #1a4a80 100%); }
-  }
-  html[data-large="true"] { font-size: 23px; }
-  html[data-contrast="true"] { color-scheme: light; --bg: #fff; --paper: #f2f6fa; --ink: #071626; --slate: #1f3546; --line: #4c657c; --blue: #124a88; --blue-deep: #0d3a6b; --blue-mist: #e3edf8; --blue-text: #0d3a6b; --on-blue: #fff; }
-  html[data-effects="off"] *, html[data-effects="off"] *::before, html[data-effects="off"] *::after { animation: none !important; transition: none !important; }
-  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } button:active { transform: none; } }
-
-  .camera-dock { align-self: start; min-width: 0; padding: 4px 0; }
-  .dock-heading { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
-  .dock-heading h2 { font-size: .95rem; font-weight: 600; }
-  .dock-heading span { font-size: .72rem; color: var(--slate); }
-  #camera-peek { display: block; width: 100%; border: 1px solid var(--line); border-radius: 24px; overflow: hidden; background: var(--paper); text-align: left; }
-  .mini-surface { display: block; position: relative; aspect-ratio: 16 / 10; background: var(--blue-mist); }
-  .mini-surface video { position: absolute; inset: 0; }
-  .camera-placeholder { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--blue-text); font-size: .8rem; }
-  .camera-placeholder .icon { width: 32px; height: 32px; }
-  .mini-copy { display: flex; padding: 16px; gap: 12px; align-items: center; justify-content: space-between; }
-  .mini-copy strong { display: block; font-size: .9rem; font-weight: 600; }
-  .mini-copy small { display: block; color: var(--slate); margin-top: 3px; font-size: .74rem; }
-  .dock-note { margin: 14px 4px 0; color: var(--slate); font-size: .8rem; line-height: 1.6; }
-  dialog { width: min(680px, calc(100% - 32px)); max-height: calc(100dvh - 40px); padding: 0; border: 1px solid var(--line); border-radius: 28px; background: var(--bg); color: var(--ink); box-shadow: 0 24px 80px #15345826; overscroll-behavior: contain; }
-  dialog::backdrop { background: #142f4b66; }
-  .dialog-head { position: sticky; top: 0; display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 16px 22px; background: var(--bg); border-bottom: 1px solid var(--line); z-index: 1; }
-  .dialog-head h2 { font-size: 1.1rem; font-weight: 650; }
-  .dialog-close { min-width: 56px; min-height: 44px; padding: 8px; color: var(--blue-text); font-size: .85rem; font-weight: 600; }
-  .dialog-body { padding: 22px; }
-  .feature-welcome { display: grid; grid-template-columns: minmax(0, 1fr) 180px; gap: 12px; align-items: center; border-radius: 20px; background: var(--blue-mist); padding: 20px; }
-  .feature-welcome h3 { font-size: 1.3rem; font-weight: 600; line-height: 1.2; margin-bottom: 10px; }
-  .feature-welcome p { font-size: .85rem; color: var(--slate); }
-  .feature-welcome img { width: 180px; height: 120px; object-fit: contain; }
-  .capability-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 0; margin: 20px 0 0; list-style: none; }
-  .capability-list li { border: 1px solid var(--line); border-radius: 18px; padding: 16px; }
-  .capability-list h3 { font-size: .95rem; font-weight: 600; margin-bottom: 6px; }
-  .capability-list p { color: var(--slate); font-size: .82rem; }
-  .feature-example { display: block; margin-top: 10px; color: var(--blue-text); font-size: .8rem; }
-  #feature-search { width: 100%; }
-  #camera-dialog { width: min(920px, calc(100% - 32px)); }
-  #camera-expanded { display: block; width: 100%; max-height: 60dvh; aspect-ratio: 16 / 9; object-fit: contain; border-radius: 18px; background: var(--paper); }
-  #camera-expanded-empty { padding: 44px 20px; background: var(--paper); border-radius: 18px; text-align: center; }
-  #camera-expanded-empty .icon { width: 44px; height: 44px; color: var(--blue); margin-bottom: 12px; }
-  #camera-expanded-status { margin-top: 16px; font-size: .9rem; color: var(--slate); }
-  #camera-dialog-start, #camera-dialog-stop, #camera-open { min-height: 48px; padding: 10px 18px; border: 1px solid var(--line); border-radius: 999px; font-size: .85rem; font-weight: 600; color: var(--blue-text); }
-  #camera-dialog-start { background: var(--blue); color: var(--on-blue); border-color: var(--blue); }
-  @media (max-width: 800px) and (min-height: 501px) { .camera-dock { padding: 0; } .dock-heading, .dock-note { display: none; } #camera-peek { display: grid; grid-template-columns: 104px minmax(0, 1fr); height: 82px; border-radius: 20px; } .mini-surface { height: 80px; aspect-ratio: auto; } .mini-copy { padding: 12px; } .mini-copy .icon { width: 20px; } .camera-placeholder { gap: 4px; font-size: .7rem; } .camera-placeholder .icon { width: 24px; height: 24px; } }
-  @media (max-width: 480px) { .feature-welcome { grid-template-columns: minmax(0, 1fr) 110px; padding: 16px; } .feature-welcome h3 { font-size: 1.1rem; } .feature-welcome img { width: 110px; height: 110px; } .dialog-head, .dialog-body { padding: 16px; } .capability-list { grid-template-columns: minmax(0, 1fr); } }
-
-  /* Fit on every phone: the Talk screen must never scroll. Trim by height, not width. */
-  @media (max-width: 800px) { .workspace { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) 82px; gap: 12px; padding: 12px 12px 10px; } .topbar-inner { padding-inline: 16px; } main { padding: 0 2px 4px; } main > section { gap: 12px; } .voice-panel { padding: 18px 16px; border-radius: 24px; } .talk-heading .intro { display: none; } .visual-zone { height: clamp(100px, 20dvh, 170px); } #subtitle-window { --caption-line: 28px; font-size: 1.05rem; } .actions { grid-template-columns: 52px minmax(0, 1fr); gap: 8px; margin-top: 18px; } .actions:has(#mic-toggle:not([hidden])) { grid-template-columns: 52px minmax(0, 1fr) auto; } #talk, #mic-toggle { min-height: 56px; font-size: .95rem; } #mic-toggle { min-width: 52px; padding-inline: 10px; } .voice-footer { font-size: .75rem; } }
-  @media (max-width: 380px) { .chip { padding-inline: 12px; } .wordmark { width: 70px; } .voice-panel { padding: 14px 12px; } #subtitle-window { --caption-line: 26px; } }
-  @media (max-height: 720px) and (max-width: 800px) { .visual-zone { height: 90px; } .orb-scene { width: 68px; height: 68px; } .actions { margin-top: 12px; } .stage { gap: 8px; } #status { margin-top: 10px; } .has-captions .talk-heading { display: none; } .has-captions .visual-zone { height: 70px; } .has-captions .orb-scene { width: 56px; height: 56px; } .voice-footer { display: none; } }
-  /* Landscape phones and very short windows: header and nav already take 136px,
-     so the stage collapses to greeting + a small sphere + one instruction line. */
-  @media (max-height: 500px) and (min-width: 600px) { :root { --nav-h: 60px; } .topbar { min-height: 54px; } .workspace { grid-template-columns: minmax(0, 1fr) 180px; grid-template-rows: minmax(0, 1fr); padding: 10px 16px; gap: 16px; } .talk-heading, .voice-footer { display: none; } .voice-panel { padding: 12px; } .stage { grid-template-columns: 90px minmax(0, 1fr); column-gap: 14px; row-gap: 2px; } .visual-zone, .has-captions .visual-zone { grid-column: 1; grid-row: 1 / 3; height: 96px; } .orb-scene, .has-captions .orb-scene { width: 64px; height: 64px; } .voice-state { grid-column: 2; font-size: .75rem; } .subtitle-area { grid-column: 2; } #subtitle-window { --caption-line: 24px; font-size: .9rem; text-align: left; } .actions { margin-top: 10px; } #talk, #mic-toggle, #features-open { min-height: 48px; } #status { margin-top: 8px; font-size: .75rem; } .bottom-nav button { min-height: 44px; } }
-  @media (max-height: 720px) and (max-width: 800px) { .has-captions .stage { grid-template-columns: 64px minmax(0, 1fr); column-gap: 12px; align-items: center; } .has-captions .visual-zone { grid-column: 1; grid-row: 1 / 3; } .has-captions .voice-state { grid-column: 2; justify-self: start; font-size: .75rem; } .has-captions .subtitle-area { grid-column: 2; } .has-captions #subtitle-window { text-align: left; } }
-  @media (min-height: 501px) and (max-height: 800px) and (min-width: 801px) { .workspace { padding-block: 12px; } .talk-heading .intro { display: none; } .voice-panel { padding: 18px 20px; } .visual-zone { height: 110px; } .orb-scene { width: 80px; height: 80px; } .actions { margin-top: 16px; } .voice-footer { display: none; } #status { margin-top: 10px; } }
-  @media (max-height: 500px) and (min-width: 600px) { .dock-heading span, .dock-note { display: none; } .dock-heading { margin-bottom: 8px; } .dock-heading h2 { font-size: .85rem; } .mini-surface { aspect-ratio: 16 / 9; } .mini-copy { padding: 10px; gap: 6px; } .mini-copy strong { font-size: .8rem; } .mini-copy small { font-size: .7rem; } .mini-copy .icon { width: 18px; } }
-  @media (max-height: 620px) { .talk-heading { display: none; } }
-  html[data-large="true"] #subtitle-window { --caption-line: 34px; font-size: 23px; }
-  @media (forced-colors: active) { #talk, .panel, .list, .record, .chip, a.action { border: 2px solid ButtonText; } .orb-scene, #memory-shine { visibility: hidden; } .wordmark { background-color: CanvasText; } }
-</style>
+<meta name="theme-color" content="#ffffff">
+<link rel="stylesheet" href="/assets/pam.css">
 </head>
 <body>
 <a class="skip" href="#main">Skip to Pam</a>
@@ -280,10 +34,24 @@
   <symbol id="icon-features" viewBox="0 0 24 24"><path d="M4 5a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v4a1 1 0 0 1 -1 1h-4a1 1 0 0 1 -1 -1l0 -4"/><path d="M14 5a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v4a1 1 0 0 1 -1 1h-4a1 1 0 0 1 -1 -1l0 -4"/><path d="M4 15a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v4a1 1 0 0 1 -1 1h-4a1 1 0 0 1 -1 -1l0 -4"/><path d="M14 15a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v4a1 1 0 0 1 -1 1h-4a1 1 0 0 1 -1 -1l0 -4"/></symbol>
   <symbol id="icon-expand" viewBox="0 0 24 24"><path d="M4 8v-2a2 2 0 0 1 2 -2h2M4 16v2a2 2 0 0 0 2 2h2M16 4h2a2 2 0 0 1 2 2v2M16 20h2a2 2 0 0 0 2 -2v-2"/></symbol>
   <symbol id="icon-camera" viewBox="0 0 24 24"><path d="M5 7h1a2 2 0 0 0 2 -2a1 1 0 0 1 1 -1h6a1 1 0 0 1 1 1a2 2 0 0 0 2 2h1a2 2 0 0 1 2 2v9a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-9a2 2 0 0 1 2 -2"/><path d="M9 13a3 3 0 1 0 6 0a3 3 0 0 0 -6 0"/></symbol>
+  <symbol id="icon-key" viewBox="0 0 24 24"><path d="M16.555 3.843l3.602 3.602a2.877 2.877 0 0 1 0 4.069l-2.643 2.643a2.877 2.877 0 0 1 -4.069 0l-.301 -.301l-6.558 6.558a2 2 0 0 1 -1.239 .578l-.175 .008h-1.172a1 1 0 0 1 -.993 -.883l-.007 -.117v-1.172a2 2 0 0 1 .467 -1.284l.119 -.13l.414 -.414h2v-2h2v-2l2.144 -2.144l-.301 -.301a2.877 2.877 0 0 1 0 -4.069l2.643 -2.643a2.877 2.877 0 0 1 4.069 0"/><path d="M15 9h.01"/></symbol>
+  <symbol id="icon-glasses" viewBox="0 0 24 24"><path d="M8 4h-2l-3 10M16 4h2l3 10M10 16l4 0M21 16.5a3.5 3.5 0 0 1 -7 0v-2.5h7v2.5M10 16.5a3.5 3.5 0 0 1 -7 0v-2.5h7v2.5"/></symbol>
+  <symbol id="icon-pill" viewBox="0 0 24 24"><path d="M4.5 12.5l8 -8a4.94 4.94 0 0 1 7 7l-8 8a4.94 4.94 0 0 1 -7 -7M8.5 8.5l7 7"/></symbol>
+  <symbol id="icon-bottle" viewBox="0 0 24 24"><path d="M10 5h4v-2a1 1 0 0 0 -1 -1h-2a1 1 0 0 0 -1 1v2M14 3.5c0 1.626 .507 3.212 1.45 4.537l.05 .07a8.093 8.093 0 0 1 1.5 4.694v6.199a2 2 0 0 1 -2 2h-6a2 2 0 0 1 -2 -2v-6.2c0 -1.682 .524 -3.322 1.5 -4.693l.05 -.07a7.823 7.823 0 0 0 1.45 -4.537M7 14.803a2.4 2.4 0 0 0 1 -.803a2.4 2.4 0 0 1 2 -1a2.4 2.4 0 0 1 2 1a2.4 2.4 0 0 0 2 1a2.4 2.4 0 0 0 2 -1a2.4 2.4 0 0 1 1 -.805"/></symbol>
+  <symbol id="icon-phone" viewBox="0 0 24 24"><path d="M6 5a2 2 0 0 1 2 -2h8a2 2 0 0 1 2 2v14a2 2 0 0 1 -2 2h-8a2 2 0 0 1 -2 -2v-14M11 4h2M12 17v.01"/></symbol>
+  <symbol id="icon-wallet" viewBox="0 0 24 24"><path d="M17 8v-3a1 1 0 0 0 -1 -1h-10a2 2 0 0 0 0 4h12a1 1 0 0 1 1 1v3m0 4v3a1 1 0 0 1 -1 1h-12a2 2 0 0 1 -2 -2v-12M20 12v4h-4a2 2 0 0 1 0 -4h4"/></symbol>
+  <symbol id="icon-object" viewBox="0 0 24 24"><path d="M12 3l8 4.5l0 9l-8 4.5l-8 -4.5l0 -9l8 -4.5M12 12l8 -4.5M12 12l0 9M12 12l-8 -4.5M16 5.25l-8 4.5"/></symbol>
 </defs></svg>
 <header class="topbar">
   <div class="topbar-inner">
     <span class="wordmark" role="img" aria-label="Pam"></span>
+    <nav class="primary-nav" aria-label="Pam views">
+      <div class="tabs" role="tablist">
+        <button id="tab-talk" role="tab" aria-selected="true" aria-controls="view-talk" data-view="talk">Talk</button>
+        <button id="tab-memories" role="tab" aria-selected="false" aria-controls="view-memories" tabindex="-1" data-view="memories">Memories<span class="unread" id="memory-unread" hidden></span></button>
+        <button id="tab-camera" role="tab" aria-selected="false" aria-controls="view-camera" tabindex="-1" data-view="camera">Camera<span class="camera-badge" id="camera-badge">Off</span></button>
+      </div>
+    </nav>
     <div class="topbar-actions">
       <button id="caregiver" class="chip" aria-label="Contact my caregiver">Get help</button>
       <details class="settings">
@@ -299,20 +67,26 @@
     </div>
   </div>
 </header>
+<div class="app-shell">
+  <div class="page-intro"><div><h1 id="greeting" class="display">Hello. I'm Pam.</h1><p class="intro">How can I help today?</p></div><time id="today" class="today"></time></div>
 <div class="workspace">
+<div class="session-column">
 <main id="main" tabindex="-1">
   <section id="view-talk" class="col" role="tabpanel" aria-labelledby="tab-talk" tabindex="0">
-    <div class="talk-heading"><h1 id="greeting" class="display">Hello. I'm Pam.</h1><p class="intro">A little support, at your pace.</p></div>
-    <div class="voice-panel">
-      <div class="stage">
-        <div class="visual-zone" aria-hidden="true">
-          <div class="orb-scene"><div class="orb-ring" id="orb-ring"></div><div class="orb-fallback" id="orb-fallback"></div><canvas id="voice-orb"></canvas></div>
+    <div class="call-room">
+      <div class="call-heading">
+        <div class="agent-identity">
+          <div class="visual-zone" aria-hidden="true"><div class="orb-scene"><div class="orb-ring" id="orb-ring"></div><div class="orb-fallback" id="orb-fallback"></div><canvas id="voice-orb"></canvas></div></div>
+          <div><strong class="agent-name">Pam</strong><p class="voice-state" id="voice-state">Ready when you are</p></div>
         </div>
-        <p class="voice-state" id="voice-state">Ready when you are</p>
-        <div class="subtitle-area">
-          <p id="subtitle-placeholder">What's on your mind? I'm here to help.</p>
-          <div id="subtitle-window" role="region" aria-label="Pam's live subtitles" hidden><p id="subtitle-text"></p></div>
+        <span class="call-label">Your voice companion</span>
+      </div>
+      <div class="subtitle-area">
+        <div id="subtitle-placeholder" class="welcome-scene">
+          <div class="welcome-copy"><h2>What would you like help with?</h2><p>Speak naturally. Pam can help find your things and plan your day.</p></div>
+          <img src="/assets/elder-companions.svg" alt="" width="480" height="320">
         </div>
+        <div id="subtitle-window" role="region" aria-label="Pam's live subtitles" hidden><p id="subtitle-text"></p></div>
       </div>
       <div class="actions">
         <button id="features-open" aria-label="Explore Pam's features" aria-haspopup="dialog" aria-controls="features-dialog"><svg class="icon" aria-hidden="true"><use href="#icon-features"/></svg><span>Features</span></button>
@@ -330,17 +104,20 @@
     </div>
   </section>
   <section class="col" id="view-memories" role="tabpanel" aria-labelledby="tab-memories" tabindex="0" hidden>
-    <div class="view-heading"><h2 class="display">Memories</h2><p class="lead">Where Pam last saw your things.</p></div>
-    <div id="memory-note" class="record" role="region" aria-label="Latest saved memory">
-      <div>
-        <strong id="memory-title">No memories yet</strong>
-        <p id="memory-detail">Turn on the camera and Pam will note where things are put down.</p>
-        <time id="memory-time"></time>
+    <div class="view-heading"><h2 class="display">Memories</h2><p class="lead">Your things, with a little history. Pick an item to explore.</p></div>
+    <div class="memory-toolbar">
+      <label class="search-field" for="memory-search">Search memories<input id="memory-search" type="search" placeholder="An item or a place" autocomplete="off"></label>
+      <div class="memory-view-switch" role="group" aria-label="Memory display">
+        <button data-memory-view="items" aria-pressed="true">By item</button><button data-memory-view="timeline" aria-pressed="false">Timeline</button>
       </div>
     </div>
+    <p id="memory-results" class="memory-results" role="status" aria-live="polite">No observations yet</p>
+    <ul id="memory-history" data-mode="items"><li class="memory-empty">Turn on the camera to start collecting memories.</li></ul>
+    <details id="memory-note" class="record memory-latest" aria-label="Latest memory update">
+      <summary><strong id="memory-title">No memories yet</strong><time id="memory-time"></time></summary>
+      <p id="memory-detail">Turn on the camera and Pam will note where things are put down.</p>
+    </details>
     <p class="feed-state" id="feed-state">Connecting to memory updates…</p>
-    <label class="search-field" for="memory-search">Search memories<input id="memory-search" type="search" placeholder="Keys, glasses, pill bottle" autocomplete="off"></label>
-    <ul id="memory-history"><li>Saved observations will appear here.</li></ul>
   </section>
   <section class="col" id="view-camera" role="tabpanel" aria-labelledby="tab-camera" tabindex="0" hidden>
     <div class="view-heading"><h2 class="display">Camera</h2><p class="lead">Lets Pam see where things are put down. You are always in control.</p></div>
@@ -359,16 +136,21 @@
   <div id="demo"></div>
 </main>
 <aside class="camera-dock" aria-label="Persistent camera preview">
-  <div class="dock-heading"><h2>Your camera</h2><span>You control what's on</span></div>
   <button id="camera-peek" aria-label="Expand camera preview" aria-haspopup="dialog" aria-controls="camera-dialog">
     <span class="mini-surface">
       <video id="camera-preview" playsinline muted autoplay aria-label="Live camera preview" hidden></video>
-      <span id="mini-camera-empty" class="camera-placeholder"><svg class="icon" aria-hidden="true"><use href="#icon-camera"/></svg><span>Camera off</span></span>
+      <span id="mini-camera-empty" class="camera-placeholder"><svg class="icon" aria-hidden="true"><use href="#icon-camera"/></svg></span>
     </span>
     <span class="mini-copy"><span><strong id="mini-camera-title">Camera is off</strong><small id="mini-camera-status">Tap to open camera controls</small></span><svg class="icon" aria-hidden="true"><use href="#icon-expand"/></svg></span>
   </button>
-  <p class="dock-note">A small view of what Pam can see. Tap to take a closer look.</p>
 </aside>
+</div>
+<aside class="activity-side" aria-label="Recent activity">
+  <div class="activity-heading"><h2>Recent memories</h2><button id="recent-all">View all</button></div>
+  <ul id="recent-list"><li class="recent-empty">Nothing saved yet. When Pam remembers something, it will appear here.</li></ul>
+  <div class="activity-note"><h3>You're in control.</h3><p>Your microphone and camera can be paused separately. Open Features to see what Pam can help with.</p></div>
+</aside>
+</div>
 </div>
 <dialog id="features-dialog" aria-labelledby="features-title">
   <div class="dialog-head"><h2 id="features-title">How Pam can help</h2><button class="dialog-close" data-close="features-dialog">Close</button></div>
@@ -390,18 +172,24 @@
     <p class="privacy">Camera frames go to your laptop. Selected images are sent to the AI service to create memories.</p>
   </div>
 </dialog>
+<dialog id="memory-dialog" aria-labelledby="memory-dialog-title">
+  <div class="dialog-head"><h2 id="memory-dialog-title">Memory history</h2><button class="dialog-close" data-close="memory-dialog">Close</button></div>
+  <div class="dialog-body">
+    <div class="memory-selected" aria-live="polite" aria-atomic="true">
+      <div class="memory-selected-heading"><span id="memory-selected-icon" class="memory-symbol" aria-hidden="true"></span><div><span id="memory-selected-status" class="memory-state"></span><time id="memory-selected-time"></time></div></div>
+      <p id="memory-selected-detail"></p>
+      <p class="memory-caution">This is a past observation. The item may have moved since then.</p>
+    </div>
+    <div class="memory-pager"><button id="memory-prev" aria-label="Previous observation">Previous</button><span id="memory-position"></span><button id="memory-next" aria-label="Next observation">Next</button></div>
+    <h3 class="memory-trail-heading">Saved history</h3>
+    <ol id="memory-trail" class="memory-trail"></ol>
+  </div>
+</dialog>
 <dialog id="transcript-dialog" aria-labelledby="transcript-title">
   <div class="dialog-head"><h2 id="transcript-title">Your conversation</h2><button class="dialog-close" data-close="transcript-dialog">Close</button></div>
   <div class="dialog-body"><div id="log" role="log" aria-live="polite" aria-relevant="additions"></div></div>
 </dialog>
 <div id="subtitle-announcement" class="sr-only" role="status" aria-live="polite"></div>
-<nav class="bottom-nav" aria-label="Pam views">
-  <div class="tabs" role="tablist">
-    <button id="tab-talk" role="tab" aria-selected="true" aria-controls="view-talk" data-view="talk">Talk</button>
-    <button id="tab-memories" role="tab" aria-selected="false" aria-controls="view-memories" tabindex="-1" data-view="memories">Memories</button>
-    <button id="tab-camera" role="tab" aria-selected="false" aria-controls="view-camera" tabindex="-1" data-view="camera">Camera<span class="camera-badge" id="camera-badge">Off</span></button>
-  </div>
-</nav>
 
 <script>
 "use strict";
@@ -506,6 +294,7 @@ function selectView(view, animate = false) {
   }
   $("tab-" + view).removeAttribute("data-new");
   $("tab-" + view).removeAttribute("aria-label");
+  if (view === "memories" && unreadMemories) { unreadMemories = 0; renderUnread(); }
   voiceVisual?.refresh();
   $("main").scrollTo({ top: 0, behavior: "instant" });
   fitCaptions();
@@ -1181,53 +970,183 @@ function showPhoto(p) {
 // Pushed messages (reminders firing, "the arm is done") -> spoken by Pam.
 // ---------------------------------------------------------------------------
 const memories = new Map();
-let lastShine = -Infinity;
+
+// Unread memories, notification-style: counts up while you are on another tab and
+// clears the moment you look. Replaces a plain dot, which said "something happened"
+// but not "three things happened while you were talking".
+let unreadMemories = 0;
+
+function renderUnread() {
+  const badge = $("memory-unread"), tab = $("tab-memories");
+  badge.hidden = unreadMemories === 0;
+  badge.textContent = unreadMemories > 9 ? "9+" : String(unreadMemories);
+  // The count is decoration to a screen reader unless the tab says it out loud.
+  if (unreadMemories) tab.setAttribute("aria-label", `Memories, ${unreadMemories} new`);
+  else tab.removeAttribute("aria-label");
+}
+let lastShine = -Infinity, memoryView = "items", memoryIndex = 0;
+let memoryDialogRecords = [], memoryOrigin = null;
+const memoryKey = memory => String(memory.object || "Saved observation").trim().replace(/\s+/g, " ").toLowerCase() || "saved observation";
+const memoryLabel = memory => { const key = memoryKey(memory); return key[0].toUpperCase() + key.slice(1); };
+function orderedMemories() {
+  const stamp = memory => { const time = Date.parse(memory.logged_at || ""); return Number.isFinite(time) ? time : -Infinity; };
+  return [...memories.values()].reverse().sort((a, b) => (stamp(b) - stamp(a)) || 0);
+}
+function groupMemories(records) {
+  const groups = new Map();
+  for (const memory of records) {
+    const key = memoryKey(memory);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(memory);
+  }
+  return [...groups.values()];
+}
+function memoryIcon(memory) {
+  const object = memoryKey(memory);
+  const type = /pill|medicine|medication/.test(object) ? "pill" : /key/.test(object) ? "key" : /glasses|spectacle/.test(object) ? "glasses"
+    : /bottle/.test(object) ? "bottle" : /phone|mobile/.test(object) ? "phone" : /wallet|purse/.test(object) ? "wallet" : "object";
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg"), use = document.createElementNS("http://www.w3.org/2000/svg", "use");
+  svg.classList.add("icon"); svg.setAttribute("aria-hidden", "true"); use.setAttribute("href", `#icon-${type}`); svg.append(use);
+  return svg;
+}
+function memoryTime(memory) {
+  const time = document.createElement("time"), date = new Date(memory.logged_at || "");
+  time.className = "memory-when";
+  if (Number.isNaN(date.getTime())) time.textContent = "Time not recorded";
+  else {
+    time.dateTime = date.toISOString(); time.title = date.toLocaleString();
+    time.textContent = date.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  }
+  return time;
+}
+function createMemoryCard(records, matching = false) {
+  const memory = records[0], li = document.createElement("li"), button = document.createElement("button");
+  button.className = "memory-card"; button.dataset.memoryObject = memoryKey(memory); button.dataset.memoryId = memory.id;
+  button.setAttribute("aria-haspopup", "dialog"); button.setAttribute("aria-controls", "memory-dialog");
+  const top = document.createElement("span"), symbol = document.createElement("span"), count = document.createElement("span");
+  top.className = "memory-card-top"; symbol.className = "memory-symbol"; count.className = "memory-count";
+  symbol.append(memoryIcon(memory));
+  count.textContent = `${records.length} ${matching ? (records.length === 1 ? "match" : "matches") : (records.length === 1 ? "observation" : "observations")}`;
+  top.append(symbol, count);
+  const title = document.createElement("strong"), detail = document.createElement("span");
+  title.className = "memory-card-title"; title.textContent = memoryLabel(memory);
+  detail.className = "memory-card-description"; detail.textContent = memory.detail || "No description was recorded.";
+  button.append(top, title, detail);
+  if (memory.title === "Observation saved") {
+    const caution = document.createElement("span"); caution.className = "memory-card-caution"; caution.textContent = "Location not confirmed"; button.append(caution);
+  }
+  const footer = document.createElement("span"), more = document.createElement("span");
+  footer.className = "memory-card-footer"; more.className = "memory-card-more"; more.textContent = "View history ›";
+  footer.append(memoryTime(memory), more); button.append(footer);
+  button.onclick = () => openMemoryDetail(memoryKey(memory), memory.id, button);
+  li.append(button);
+  return li;
+}
+function findMemoryButton(list, object, id) {
+  const buttons = [...(list?.querySelectorAll(".memory-card") || [])];
+  return buttons.find(button => button.dataset.memoryId === id) || buttons.find(button => button.dataset.memoryObject === object);
+}
+function replaceMemoryCards(list, rows) {
+  const active = list.contains(document.activeElement) ? document.activeElement.closest(".memory-card") : null;
+  list.replaceChildren(...rows);
+  if (active) findMemoryButton(list, active.dataset.memoryObject, active.dataset.memoryId)?.focus({ preventScroll: true });
+}
+function renderRecentMemories() {
+  const groups = groupMemories(orderedMemories()).slice(0, 3);
+  const rows = groups.map(records => createMemoryCard(records));
+  if (!rows.length) {
+    const li = document.createElement("li"); li.className = "recent-empty";
+    li.textContent = "Nothing saved yet. When Pam remembers something, it will appear here."; rows.push(li);
+  }
+  replaceMemoryCards($("recent-list"), rows);
+}
+$("recent-all").onclick = () => { $("memory-search").value = ""; renderMemoryHistory(); selectView("memories"); };
 function renderMemoryHistory() {
   const query = $("memory-search").value.trim().toLowerCase();
-  const matches = [...memories.values()].reverse().filter(m => `${m.object || ""} ${m.detail || ""}`.toLowerCase().includes(query));
-  const rows = matches.map(m => {
-    const li = document.createElement("li"), button = document.createElement("button");
-    button.className = "row";
-    const main = document.createElement("span"); main.className = "row-main";
-    const title = document.createElement("strong"), description = document.createElement("span");
-    description.className = "row-sub";
-    title.textContent = m.object ? m.object[0].toUpperCase() + m.object.slice(1) : "Saved observation";
-    description.textContent = m.detail || "No description available.";
-    main.append(title, description);
-    const chev = document.createElement("span"); chev.className = "chev"; chev.textContent = "›"; chev.setAttribute("aria-hidden", "true");
-    button.append(main, chev);
-    button.onclick = () => {
-      selectView("talk", true);
-      showCard({ title: m.object || "Saved observation", body: m.detail });
-      els.card.focus();
-      say("Here's the saved observation. It may not be the item's current location.");
-    };
-    li.append(button);
-    return li;
-  });
+  const matches = orderedMemories().filter(m => `${m.object || ""} ${m.detail || ""}`.toLowerCase().includes(query));
+  const groups = memoryView === "items" ? groupMemories(matches) : matches.map(memory => [memory]);
+  const rows = groups.map(records => createMemoryCard(records, !!query));
   if (!rows.length) {
-    const li = document.createElement("li");
-    li.textContent = query ? "No recent memories match. Try another word." : "Saved observations will appear here.";
-    rows.push(li);
+    const li = document.createElement("li"), title = document.createElement("strong"), detail = document.createElement("p"), action = document.createElement("button");
+    li.className = "memory-empty";
+    title.textContent = query ? "No memories match" : "A place for your memories";
+    detail.textContent = query ? "Try another item or place, or clear your search." : "Turn on the camera. Pam will save observations of the things around you.";
+    action.className = "chip"; action.textContent = query ? "Clear search" : "Open camera";
+    action.onclick = () => { if (query) { $("memory-search").value = ""; renderMemoryHistory(); $("memory-search").focus(); } else selectView("camera"); };
+    li.append(title, detail, action); rows.push(li);
   }
-  $("memory-history").replaceChildren(...rows);
+  $("memory-history").dataset.mode = memoryView;
+  replaceMemoryCards($("memory-history"), rows);
+  $("memory-results").textContent = `${matches.length} ${query ? "matching" : "recent"} ${matches.length === 1 ? "observation" : "observations"}`;
 }
 $("memory-search").oninput = renderMemoryHistory;
+for (const button of document.querySelectorAll("[data-memory-view]")) {
+  button.onclick = () => {
+    memoryView = button.dataset.memoryView;
+    for (const choice of document.querySelectorAll("[data-memory-view]")) choice.setAttribute("aria-pressed", String(choice === button));
+    renderMemoryHistory();
+  };
+}
+function openMemoryDetail(object, id, trigger) {
+  memoryDialogRecords = orderedMemories().filter(memory => memoryKey(memory) === object);
+  if (!memoryDialogRecords.length) return;
+  memoryOrigin = { list: trigger.closest("ul")?.id, object, id };
+  $("memory-dialog-title").textContent = memoryLabel(memoryDialogRecords[0]);
+  $("memory-selected-icon").replaceChildren(memoryIcon(memoryDialogRecords[0]));
+  const trail = memoryDialogRecords.map((memory, index) => {
+    const li = document.createElement("li"), button = document.createElement("button"), detail = document.createElement("span");
+    detail.textContent = memory.detail || "No description was recorded.";
+    button.append(memoryTime(memory), detail); button.onclick = () => selectMemoryObservation(index); li.append(button); return li;
+  });
+  $("memory-trail").replaceChildren(...trail);
+  selectMemoryObservation(Math.max(0, memoryDialogRecords.findIndex(memory => memory.id === id)));
+  openDialog("memory-dialog", trigger);
+}
+function selectMemoryObservation(index) {
+  const memory = memoryDialogRecords[index];
+  if (!memory) return;
+  memoryIndex = index;
+  $("memory-selected-detail").textContent = memory.detail || "No description was recorded.";
+  $("memory-selected-status").textContent = memory.title === "Memory saved" ? "Saved location" : memory.title === "Observation saved" ? "Location not confirmed" : "Saved observation";
+  const time = memoryTime(memory), selectedTime = $("memory-selected-time");
+  selectedTime.textContent = time.textContent;
+  selectedTime.removeAttribute("datetime");
+  if (time.dateTime) selectedTime.dateTime = time.dateTime;
+  $("memory-position").textContent = `${index + 1} of ${memoryDialogRecords.length}`;
+  $("memory-prev").disabled = index === 0;
+  $("memory-next").disabled = index === memoryDialogRecords.length - 1;
+  [...$("memory-trail").children].forEach((li, i) => {
+    const button = li.querySelector("button");
+    if (i === index) button.setAttribute("aria-current", "true"); else button.removeAttribute("aria-current");
+  });
+}
+$("memory-prev").onclick = () => selectMemoryObservation(memoryIndex - 1);
+$("memory-next").onclick = () => selectMemoryObservation(memoryIndex + 1);
+$("memory-dialog").addEventListener("close", () => {
+  if (!$("memory-dialog").returnFocus?.isConnected && memoryOrigin) {
+    const target = findMemoryButton($(memoryOrigin.list), memoryOrigin.object, memoryOrigin.id) || $("tab-" + currentView);
+    target.focus({ preventScroll: true });
+  }
+});
+renderMemoryHistory();
+renderRecentMemories();
 function showMemory(memory, fresh = true) {
   if (!memory.id || memories.has(memory.id)) return;
   memories.set(memory.id, memory);
   if (memories.size > 100) memories.delete(memories.keys().next().value);
   $("memory-title").textContent = memory.title || "Memory saved";
   $("memory-detail").textContent = memory.detail || "Pam saved a new observation.";
-  const date = new Date(memory.logged_at);
+  const date = new Date(memory.logged_at || "");
   $("memory-time").textContent = Number.isNaN(date.getTime()) ? "" : date.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
   $("memory-time").dateTime = Number.isNaN(date.getTime()) ? "" : date.toISOString();
   renderMemoryHistory();
+  renderRecentMemories();
   $("memory-peek-detail").textContent = fresh ? `New memory: ${memory.object || "observation"}` : "Your memories are ready.";
   if (fresh) $("memory-announcement").textContent = `${memory.title || "Memory saved"}: ${memory.object || "a new observation"}`;
   if (fresh && currentView !== "memories") {
     $("tab-memories").dataset.new = "true";
-    $("tab-memories").setAttribute("aria-label", "Memories, new memory saved");
+    unreadMemories++;
+    renderUnread();
   }
   if (fresh && performance.now() - lastShine > 8000 && !matchMedia("(prefers-reduced-motion: reduce)").matches && document.documentElement.dataset.effects !== "off") {
     lastShine = performance.now();
@@ -1253,6 +1172,9 @@ es.onmessage = (e) => {
 {
   const hour = new Date().getHours();
   $("greeting").textContent = hour < 12 ? "Good morning." : hour < 18 ? "Good afternoon." : "Good evening.";
+  const today = new Date();
+  $("today").dateTime = today.toISOString();
+  $("today").textContent = today.toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" });
 }
 
 for (const [id, key] of [["large-text", "large"], ["high-contrast", "contrast"], ["reduce-effects", "effects"]]) {
