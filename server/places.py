@@ -79,30 +79,53 @@ def nearest_known(lat, lon):
     return best, best_d
 
 
+def _short_address(formatted: str) -> str:
+    """"77 Massachusetts Ave, Cambridge, MA 02139, USA" -> "77 Massachusetts Ave,
+    Cambridge". The full string is for a map label, not for something read aloud to
+    someone who only wants to know which building they were in."""
+    parts = [p.strip() for p in formatted.split(",")]
+    return ", ".join(parts[:2]) if len(parts) > 2 else formatted
+
+
 def _google(lat, lon):
-    """Nearest named place from Google, or a street address. None without a key."""
+    """Nearest named place, else a street address. None without a key or without the
+    APIs enabled.
+
+    Places API (New) is tried first and gives what we actually want - a building name
+    like "Hayden Library". Geocoding is the fallback and only ever gives an address,
+    which is still worth having: "near 77 Massachusetts Ave" beats saying nothing.
+    The legacy Places endpoint is not attempted at all; Google no longer lets new
+    projects enable it, so it is a guaranteed round trip to a 403.
+    """
     key = os.environ.get("GOOGLE_MAPS_API_KEY")
     if not key:
         return None
     import httpx
 
-    try:
-        with httpx.Client(timeout=4.0) as c:
-            r = c.get("https://maps.googleapis.com/maps/api/place/nearbysearch/json",
-                      params={"location": f"{lat},{lon}", "radius": 80, "key": key})
-            results = r.json().get("results") or []
-            # rank_by prominence already sorts; take the first establishment-ish hit
-            for hit in results:
-                if "point_of_interest" in (hit.get("types") or []) or hit.get("name"):
-                    return {"place": hit["name"], "source": "google",
-                            "types": (hit.get("types") or [])[:3]}
+    with httpx.Client(timeout=4.0) as c:
+        try:
+            r = c.post("https://places.googleapis.com/v1/places:searchNearby",
+                       headers={"Content-Type": "application/json", "X-Goog-Api-Key": key,
+                                "X-Goog-FieldMask": "places.displayName,places.primaryType"},
+                       json={"locationRestriction": {"circle": {
+                                 "center": {"latitude": lat, "longitude": lon}, "radius": 100.0}},
+                             "maxResultCount": 5})
+            for hit in (r.json().get("places") or []):
+                name = (hit.get("displayName") or {}).get("text")
+                if name:
+                    return {"place": name, "source": "google"}
+        except Exception:
+            pass          # not enabled, or offline: the address below is still useful
+
+        try:
             r = c.get("https://maps.googleapis.com/maps/api/geocode/json",
                       params={"latlng": f"{lat},{lon}", "key": key})
             res = r.json().get("results") or []
             if res:
-                return {"place": res[0]["formatted_address"], "source": "google_address"}
-    except Exception:
-        return None
+                return {"place": _short_address(res[0]["formatted_address"]),
+                        "source": "google_address"}
+        except Exception:
+            pass
     return None
 
 
