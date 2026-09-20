@@ -725,3 +725,13 @@ Model weights are gitignored too and shared out of band.
 - Native dialog close events can arrive after the user focuses another control.
   Only restore focus when it is on the document body or still inside that dialog;
   unconditional restoration can steal focus from keyboard tab navigation.
+- Windows deployment: os.pread is unavailable. Schedule appends inspect the final
+  byte with lseek/read on their own descriptor while retaining append-only writes.
+  Unix mode bits do not verify Windows privacy: schedule storage creates a protected
+  DACL granting only the current Windows user's SID access, verifies ownership,
+  and re-applies protection before appending to an existing file. Protection failure
+  refuses the write. POSIX retains owner-only mode 0600.
+- Native Windows Get-Acl checks replace only the platform-inapplicable stat-mode
+  assertion, not the privacy requirement. The Windows laptop passed 196 schedule/
+  parser tests, including torn writes, 25 concurrent saves, new/existing-file ACLs,
+  and an injected permission failure proving that no patient data is appended.

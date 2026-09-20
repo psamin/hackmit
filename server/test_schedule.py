@@ -10,6 +10,7 @@ and a crash halfway through a save never loses or garbles the previous schedule.
 import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import threading
@@ -519,9 +520,58 @@ class Saving(StoreBase):
         self.store.save(sched(med(times=["07:00", "19:00"])))
         self.assertEqual(self.store.load().schedule.medications[0].id, "metformin")
 
+    def assert_private_file(self):
+        if os.name != "nt":
+            self.assertEqual(os.stat(self.path).st_mode & 0o777, 0o600)
+            return
+        script = """
+        $acl = Get-Acl -LiteralPath $env:PAM_TEST_PRIVATE_FILE -ErrorAction Stop
+        $sidType = [System.Security.Principal.SecurityIdentifier]
+        $rules = @($acl.GetAccessRules($true, $true, $sidType) | ForEach-Object {
+            @{identity=$_.IdentityReference.Value; kind=$_.AccessControlType.ToString(); inherited=$_.IsInherited; mask=[int]$_.FileSystemRights}
+        })
+        @{owner=$acl.GetOwner($sidType).Value; user=[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value;
+          protected=$acl.AreAccessRulesProtected; rules=$rules} | ConvertTo-Json -Compress -Depth 4
+        """
+        result = json.loads(subprocess.check_output(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+                            env={**os.environ, "PAM_TEST_PRIVATE_FILE": str(self.path)}, text=True))
+        self.assertEqual(result["owner"], result["user"])
+        self.assertTrue(result["protected"])
+        self.assertEqual(len(result["rules"]), 1)
+        rule = result["rules"][0]
+        self.assertEqual(rule["identity"], result["user"])
+        self.assertEqual(rule["kind"], "Allow")
+        self.assertFalse(rule["inherited"])
+        self.assertEqual(rule["mask"] & 0x1F01FF, 0x1F01FF)
+
     def test_the_file_is_private_to_the_owner(self):
         self.store.save(sched(med()))
-        self.assertEqual(os.stat(self.path).st_mode & 0o777, 0o600)
+        self.assert_private_file()
+
+    def test_existing_file_is_secured_before_saving(self):
+        self.path.write_text("", encoding="utf-8")
+        self.store.save(sched(med()))
+        self.assert_private_file()
+
+    def test_failure_to_secure_file_does_not_append_patient_data(self):
+        from unittest.mock import patch
+        self.store.save(sched(med()))
+        previous = self.path.read_bytes()
+        protection = (patch.object(s._windows_file_api()[1], "SetSecurityInfo", return_value=5) if os.name == "nt"
+                      else patch.object(s.os, "fchmod", side_effect=PermissionError("denied")))
+        with protection:
+            with self.assertRaises(OSError):
+                self.store.save(sched(med(note="Must not be written")))
+        self.assertEqual(self.path.read_bytes(), previous)
+        self.assertEqual(len(self.store.history()), 1)
+
+    def test_appending_keeps_the_file_private_and_history_intact(self):
+        self.store.save(sched(med()))
+        first = self.path.read_bytes()
+        self.store.save(sched(med(note="Updated instructions")))
+        self.assertTrue(self.path.read_bytes().startswith(first))
+        self.assertEqual(len(self.store.history()), 2)
+        self.assert_private_file()
 
     def test_unicode_survives_the_round_trip(self):
         self.store.save(sched(med(note="con el desayuno, café ☕")))
