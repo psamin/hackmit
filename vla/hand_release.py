@@ -49,7 +49,7 @@ def wait_for_hand(camera_index: int = 0, timeout_s: float = 30.0, nag_s: float =
 
     detector = mp_hands.Hands(static_image_mode=False, max_num_hands=1,
                               min_detection_confidence=0.5, min_tracking_confidence=0.5)
-    deadline, next_nag, nagged, streak = time.time() + timeout_s, time.time(), 0, 0
+    deadline, next_nag, nagged, streak, frames = time.time() + timeout_s, time.time(), 0, 0, 0
     try:
         while time.time() < deadline:
             if time.time() >= next_nag:
@@ -60,6 +60,7 @@ def wait_for_hand(camera_index: int = 0, timeout_s: float = 30.0, nag_s: float =
             ok, frame = cap.read()
             if not ok:
                 continue
+            frames += 1
             result = detector.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
             found = result.multi_hand_landmarks or []
             biggest = max((hand_area(h) for h in found), default=0.0)
@@ -67,7 +68,10 @@ def wait_for_hand(camera_index: int = 0, timeout_s: float = 30.0, nag_s: float =
             if streak >= CONSECUTIVE:
                 print(f"hand detected, covering {biggest * 100:.0f}% of the frame - releasing", flush=True)
                 return True
-        print(f"no hand after {timeout_s:.0f}s - releasing anyway", flush=True)
+        # Say how many frames arrived: "no hand" and "the camera gave us nothing" look identical otherwise,
+        # and dimOS holds the same camera during a rollout.
+        reason = "no hand seen" if frames else "the camera returned no frames"
+        print(f"{reason} in {timeout_s:.0f}s ({frames} frames read) - releasing anyway", flush=True)
         return False
     finally:
         cap.release()
