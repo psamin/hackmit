@@ -182,6 +182,7 @@ FUNCTIONS = [
     fn("get_schedule", "List today's calendar events"),
     fn("get_reminders", "List the user's active reminders"),
     fn("get_weather", "Current weather at the user's home"),
+    fn("get_time_and_place", "Tell the user what day and time it is and where they are right now, plus what is next on their calendar. Use when they ask what day it is, where they are, what is happening today, or seem disoriented."),
     fn("show_photo", "Show a photo of a person on the user's screen",
        {"type": "object", "properties": {"name": _str("person's first name")}, "required": ["name"]}),
     fn("search_flights", "Show flight options on the user's screen",
@@ -446,6 +447,7 @@ async def set_location(body: dict):
     changed = loc.get("place") != _last_fix.get("place")
     _last_fix.clear()
     _last_fix.update(loc)
+    _last_fix["at"] = time.time()  # so time_and_place can refuse a stale fix
     if changed:
         log("PLACE", f"now {loc.get('place') or 'somewhere unrecognised'} "
                      f"({loc['source']}, fix +/-{acc}m)")
@@ -592,6 +594,14 @@ async def calendar():
                 "events": events}
     except Exception as e:
         return {"say": "I couldn't read your calendar just now.", "error": str(e)}
+
+
+@app.get("/api/time-and-place")
+async def time_and_place_endpoint():
+    """Day, time, place and what is next: see server/orientation.py."""
+    from orientation import time_and_place
+    at = _last_fix.get("at")
+    return await time_and_place(_last_fix, time.time() - at if at else None)
 
 
 # --------------------------------------------------------------------------
