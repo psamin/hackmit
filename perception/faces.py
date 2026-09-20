@@ -58,7 +58,12 @@ MODEL = "buffalo_l"                                # SCRFD detect+landmark, ArcF
 MIN_FACE_PX = 80          # below this the embedding is unreliable at any threshold
 MIN_DET_SCORE = 0.60
 MIN_BLUR = 40.0           # variance of Laplacian on the crop
-ENROL_MIN_FACE_PX = 120   # a poor enrolment silently degrades every later match
+# ArcFace's own input is 112x112, so a detection at or above ~112px warps into the
+# canonical crop with no upscaling -- that is the natural floor, not a number picked by
+# feel. 120 was above native for no reason and rejected clean 112px faces from a laptop
+# webcam at normal seated distance. Below 100 the crop is being invented, and a poor
+# enrolment silently degrades every later match against that person.
+ENROL_MIN_FACE_PX = 100
 ENROL_MIN_BLUR = 80.0
 
 MATCH_THR = 0.38          # cosine similarity; calibrate before trusting it
