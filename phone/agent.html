@@ -56,6 +56,9 @@
   #photo.show { display: block; }
   #photo img { width: 100%; border-radius: 14px; }
   #photo .cap { font-size: 20px; font-weight: 700; text-align: center; padding-top: 8px; }
+  #cam { width: 100%; max-width: 420px; font-size: 13px; color: #63707e; }
+  #cam.on { color: #6cc08b; }
+  #cam.err { color: #e2707a; }
   #log { width: 100%; max-width: 420px; font-size: 14px; color: #63707e; white-space: pre-wrap; }
   #log .u { color: #9fb0bf; } #log .a { color: #b9a7f5; }
   #demo { display: none; width: 100%; max-width: 420px; flex-wrap: wrap; gap: 8px; }
@@ -71,6 +74,7 @@
   <button id="talk">Talk to Pam</button>
   <div id="status">tap the button, then just talk</div>
   <div id="demo"></div>
+  <div id="cam">camera off</div>
   <div id="log"></div>
 </main>
 
@@ -78,7 +82,7 @@
 "use strict";
 const $ = (id) => document.getElementById(id);
 const els = { talk: $("talk"), status: $("status"), conn: $("conn"), card: $("card"),
-              photo: $("photo"), log: $("log"), demo: $("demo") };
+              photo: $("photo"), log: $("log"), demo: $("demo"), cam: $("cam") };
 const DG_URL = "wss://agent.deepgram.com/v1/agent/converse";
 // ?dg=ws://127.0.0.1:8000/api/fake-dg tests the whole client path against the
 // server's fake agent — no API key needed.
@@ -138,6 +142,88 @@ function makePlayer() {
 }
 
 // ---------------------------------------------------------------------------
+// Camera: same wire format as index.html -- one JPEG per binary WS message to
+// the perception relay. Kept in this file rather than shared with index.html so
+// that page stays a standalone, dependency-free fallback for debugging the
+// camera on its own.
+//
+// It rides the SAME user gesture as the Talk button (getUserMedia needs one),
+// but it is deliberately NOT stopped when the voice session stops: this is a
+// memory device, and it has to keep seeing put-downs between conversations.
+// ---------------------------------------------------------------------------
+const CAM = { fps: 10, height: 720, quality: 0.7, maxBuffered: 256 * 1024 };
+const CAM_URL = `wss://${location.hostname}:8765`;
+
+let camStream = null, camSocket = null, camTimer = null, camVideo = null;
+let camSent = 0, camSkipped = 0, camStart = 0;
+const camCanvas = document.createElement("canvas");
+const camCtx = camCanvas.getContext("2d", { alpha: false });
+
+function camSay(msg, cls = "") { els.cam.textContent = msg; els.cam.className = cls; }
+
+async function camSendFrame() {
+  if (!camSocket || camSocket.readyState !== WebSocket.OPEN || !camVideo.videoWidth) return;
+  // Backpressure: drop rather than deepen the queue, so "live" stays live.
+  if (camSocket.bufferedAmount > CAM.maxBuffered) { camSkipped++; return; }
+  const scale = CAM.height / camVideo.videoHeight;
+  const w = Math.round(camVideo.videoWidth * scale), h = CAM.height;
+  if (camCanvas.width !== w || camCanvas.height !== h) { camCanvas.width = w; camCanvas.height = h; }
+  camCtx.drawImage(camVideo, 0, 0, w, h);
+  const blob = await new Promise((r) => camCanvas.toBlob(r, "image/jpeg", CAM.quality));
+  if (!blob || !camSocket || camSocket.readyState !== WebSocket.OPEN) return;
+  camSocket.send(await blob.arrayBuffer());
+  camSent++;
+}
+
+async function startCamera() {
+  if (camStream) return;                       // already running: leave it alone
+  try {
+    camSay("starting camera…");
+    // "environment" = the rear camera, the one aimed at the table, not the face.
+    camStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } },
+      audio: false,
+    });
+    camVideo = document.createElement("video");
+    camVideo.playsInline = true; camVideo.muted = true; camVideo.srcObject = camStream;
+    await camVideo.play();
+
+    camSocket = new WebSocket(CAM_URL);
+    camSocket.binaryType = "arraybuffer";
+    camSocket.onopen = () => {
+      camSent = camSkipped = 0; camStart = performance.now();
+      camTimer = setInterval(camSendFrame, 1000 / CAM.fps);
+      camSay("camera streaming", "on");
+    };
+    // The usual cause is the relay not running, or its self-signed certificate
+    // never having been accepted on this phone. Say both, because the browser
+    // reports an opaque failure either way.
+    camSocket.onerror = () => camSay(
+      `camera can't reach ${CAM_URL} — is memory_pipeline running, and have you opened ` +
+      `https://${location.hostname}:8765 once to accept the certificate?`, "err");
+    camSocket.onclose = () => { clearInterval(camTimer); camTimer = null; camSay("camera disconnected", "err"); };
+  } catch (e) {
+    camSay(`camera blocked: ${e.message}`, "err");
+    stopCamera();
+  }
+}
+
+function stopCamera() {
+  clearInterval(camTimer); camTimer = null;
+  if (camSocket) { camSocket.onclose = null; camSocket.close(); camSocket = null; }
+  if (camStream) { camStream.getTracks().forEach((t) => t.stop()); camStream = null; }
+  camVideo = null;
+  camSay("camera off");
+}
+
+setInterval(() => {
+  if (!camTimer) return;
+  const secs = (performance.now() - camStart) / 1000;
+  camSay(`camera streaming — ${(camSent / Math.max(secs, 0.001)).toFixed(1)} fps, `
+         + `${camSent} sent, ${camSkipped} dropped`, "on");
+}, 2000);
+
+// ---------------------------------------------------------------------------
 // The voice session
 // ---------------------------------------------------------------------------
 async function start() {
@@ -164,6 +250,7 @@ async function start() {
     els.conn.textContent = "connected";
     els.status.textContent = "go ahead, I'm listening";
     try { wakeLock = await navigator.wakeLock.request("screen"); } catch {}
+    startCamera();   // same user gesture; outlives the voice session on purpose
   } catch (e) {
     say(e.message || "couldn't start", true);
     stop();
