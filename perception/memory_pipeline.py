@@ -56,6 +56,11 @@ BUFFER_S = 12.0
 ARM_EP_MIN_S = 1.0    # arm movement needed for an arm episode
 ARM_QUIET_S = 0.6     # no arm movement for this long ends the episode
 SNAPSHOT_EVERY_S = 1.0
+# A copy of the newest frame, whatever is or is not in it, for tools that need to ask
+# "what is in front of the camera right now" -- face identification in particular.
+# The relay path lets server/app.py tap frames in flight, but a `--source 0` run never
+# goes through the server, so without this the face tools would only work off a phone.
+FRAME_SNAPSHOT_EVERY_S = 1.0
 # A track this far past its last sighting can no longer affect anything: the longest
 # lookback in the loop is ACTIVE_WINDOW_S, and the two rules that reach into lost
 # tracks need them within 2.0s (ID-switch donor) and 0.5s (lost-then-placed).
@@ -527,6 +532,10 @@ def main():
             last_prune = t
             for j in [j for j, tr in tracks.items() if tr.last_t is not None and t - tr.last_t > TRACK_TTL_S]:
                 del tracks[j]
+
+        if t - snap_t.get("_frame", -1e18) >= FRAME_SNAPSHOT_EVERY_S:
+            snap_t["_frame"] = t
+            cv2.imwrite(str(out / "last_seen" / "_frame.jpg"), frame)
 
         prev_g, prev_boxes, prev_centres, prev_arm_c = g, list(boxes), centres, arm_c
         n_frames += 1
