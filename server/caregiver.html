@@ -178,8 +178,19 @@ async function loadStatus() {
   const r = await api("/api/caregiver/status");
   if (r.status === 401) return route();             // the session ended
   const tile = (label, value, cls) => el("div", null, "tile", [el("div", label, "label"), el("div", value, "value " + cls)]);
+  const b = r.body;
+  // Scheduled reminders: say plainly when they are NOT being sent, and why. A damaged schedule file must
+  // never look like "all fine".
+  const [reminderText, reminderClass] =
+    !b.schedule_reminders ? ["Off", "off"]
+    : !b.scheduler_running ? ["Not running", "off"]
+    : b.schedule === "active" ? [`On (schedule version ${b.schedule_version})`, "on"]
+    : b.schedule === "none" ? ["No schedule saved yet", "off"]
+    : b.schedule === "damaged" ? ["Schedule file damaged: no reminders are being sent", "off"]
+    : ["Problem reading the schedule", "off"];
   fill($("tiles"),
     tile("Medication check", r.body.medication_check ? "On" : "Off", r.body.medication_check ? "on" : "off"),
+    tile("Scheduled reminders", reminderText, reminderClass),
     tile("Demo timings", r.body.demo_timings ? "Fast (demo)" : "Normal", r.body.demo_timings ? "off" : "on"),
     tile("Search index", r.body.elasticsearch ? "Connected" : "Not set up", r.body.elasticsearch ? "on" : "off"));
 }

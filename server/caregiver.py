@@ -156,5 +156,8 @@ async def logout(request: Request):
 async def status():
     """What the dashboard shell shows for now: which parts of the system are switched on."""
     import doses
+    health = doses.schedule_health()
     return {"medication_check": doses.enabled(), "demo_timings": doses.demo_mode(),
+            "schedule_reminders": doses.schedule_enabled(), "schedule": health["state"],
+            "schedule_version": health["version"], "scheduler_running": health["running"],
             "elasticsearch": bool(os.environ.get("ELASTICSEARCH_URL"))}

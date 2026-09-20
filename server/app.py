@@ -781,7 +781,7 @@ async def pill_status():
 
 @app.post("/api/dose/confirm")
 async def dose_confirm(body: dict):
-    return doses.confirm(body.get("dose"), str(body.get("answer", "")))
+    return doses.confirm(body.get("dose"), str(body.get("answer", "")), group=body.get("group"))
 
 
 @app.post("/api/dose/simulate-evidence")
@@ -1120,7 +1120,8 @@ def main():
     http = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=8000, loop="none"))
     loop.create_task(reminder_loop())
     if doses.env_enabled():
-        loop.create_task(doses.watch(_reminders_with_fired, MEMORY_JSONL, _broadcast))
+        loop.create_task(doses.watch(_reminders_with_fired, MEMORY_JSONL, _broadcast,
+                                     schedule_fn=lambda: doses.schedule_store().load()))
     import socket
     ip = socket.gethostbyname(socket.gethostname())
     print(f"\n  Phone:  https://{ip}:8443/        (Pam — voice agent)")
