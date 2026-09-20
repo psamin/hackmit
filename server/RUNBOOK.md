@@ -25,7 +25,7 @@ page are both trusted. Mic permission prompt appears once inside "Talk to Pam".
 ## Environment
 
 `server/.env` (see `.env.example`): `DEEPGRAM_API_KEY` is the only required key —
-console.deepgram.com, Member role. Optional: `ELASTICSEARCH_URL`, `TWILIO_*`,
+console.deepgram.com, Member role. Optional: `ELASTICSEARCH_URL`,
 `AMADEUS_*`, `CALENDAR_ICS_URL`, `ARM_URL`, `HOME_LAT/LON`. `perception/.env` needs
 `ANTHROPIC_API_KEY` for the VLM.
 
@@ -56,6 +56,31 @@ Windows user's DPAPI key. On other systems the file is owner-readable only under
 `~/.local/share/Pam/`. OAuth setup is restricted to the laptop's loopback URL.
 Treat the Pam server as a single-user app on a trusted network, not a public service.
 
+## Voice-first flight information
+
+Pam speaks flight information rather than handing off to a search link. There is
+no Google Flights card fallback. Without `AMADEUS_KEY` and `AMADEUS_SECRET`, Pam
+explains aloud that schedules and fares are unavailable instead of claiming to
+have found flights.
+
+`AMADEUS_ENV=test` is the default and all returned offers are explicitly labelled
+as test data, not live availability. Real-time searches require Amadeus production
+credentials and `AMADEUS_ENV=production`; changing this can incur provider charges.
+Do not enable production access without the account owner's approval.
+
+Searches are one-way, for one adult, from the saved `home_airport`. The spoken
+function result includes the airline, airports, local departure/arrival dates and
+times, stops, total price, and the returned currency. Pam presents one option at a
+time. No flight-purchase endpoint is called. A missing travel date prompts a spoken
+question instead of silently assuming tomorrow.
+
+Uber handoff cards remain available to a helper, but their spoken
+responses explain voice-only limitations without instructing the user to tap a
+screen. Verbal approval is requested in the agent prompt; it is not a substitute
+for server-side confirmation enforcement or an external app's required consent.
+After backend/prompt changes, stop and restart the voice session to get the new
+agent settings.
+
 ## Safe capability verification
 
 ```bash
@@ -70,10 +95,10 @@ Browser tests isolate their relay so synthetic camera frames cannot enter a real
 perception run. Do not use the old live `?demo=1` action buttons as a harmless smoke
 test: they can invoke configured providers and the robot.
 
-Calls/texts need real contacts; the checked-in numbers are demo placeholders.
-Twilio sends/bridges immediately when configured, so it needs a separate real-user
-confirmation step before enabling it for an elderly user. The robot wrapper starts
-its configured policy; it does not yet pass the requested item to that policy.
+Text messaging, contact calls, and caregiver calls have been removed, including
+API routes, voice tools, phone controls, and provider configuration. Saved contacts
+remain available for family-photo names and captions. The robot wrapper starts its
+configured policy; it does not yet pass the requested item to that policy.
 
 ## Test ladder (each rung works without the next)
 
@@ -95,8 +120,6 @@ built from this file, so new names are recognized correctly.
 1. "Where is my medication?" → finds latest placed memory + photo of the spot
 2. "Remind me to take my pills in one minute" → fires over SSE, Pam speaks unprompted
 3. "What's on my calendar?" → linked Google Calendar, or an explicit not-connected message
-4. "Text Sarah that I love her" → card → tap → Messages prefilled (or Twilio sends)
-5. "I need help" → call_caregiver → tel: card (or Twilio rings the phone)
-6. "Get me a ride to the airport" → Uber opens fully filled in
-7. "Show me flights to New York" → cards + Google Flights link
-8. "Fetch my pill bottle" → the arm (if vla server is up)
+4. "Get me a ride to the airport" → prepared Uber handoff; a helper completes the booking
+5. "Find flights to New York" → spoken offers when configured, otherwise an honest spoken service-availability message
+6. "Fetch my pill bottle" → the arm (if vla server is up)

@@ -53,7 +53,6 @@
       </div>
     </nav>
     <div class="topbar-actions">
-      <button id="caregiver" class="chip" aria-label="Contact my caregiver">Get help</button>
       <details class="settings">
         <summary aria-label="Reading options">Aa</summary>
         <div class="settings-panel">
@@ -159,7 +158,7 @@
     <label class="search-field" for="feature-search">Find a feature<input id="feature-search" type="search" placeholder="Try weather or reminders" autocomplete="off"></label>
     <ul id="capability-list" class="capability-list"></ul><p id="feature-empty" class="privacy" hidden>No matching features. Try another word.</p>
     <button id="features-transcript" class="chip" style="margin-top:20px">View conversation history</button>
-    <p class="privacy">Some features need a connected calendar, saved contacts, family photos, or robot. Calls, messages and rides may open another app for you to confirm.</p>
+    <p class="privacy">Some features need a connected calendar, family photos, or robot. Ride booking must be completed separately in Uber.</p>
   </div>
 </dialog>
 <dialog id="camera-dialog" aria-labelledby="camera-dialog-title">
@@ -242,9 +241,12 @@ function openDialog(id, trigger) {
   dialog.returnFocus = trigger;
   if (!dialog.open) dialog.showModal();
 }
+function restoreDialogFocus(dialog, target = dialog.returnFocus) {
+  if (document.activeElement === document.body || dialog.contains(document.activeElement)) target?.focus({ preventScroll: true });
+}
 for (const button of document.querySelectorAll("[data-close]")) button.onclick = () => $(button.dataset.close).close();
 for (const dialog of document.querySelectorAll("dialog")) {
-  dialog.addEventListener("close", () => dialog.returnFocus?.focus({ preventScroll: true }));
+  dialog.addEventListener("close", () => restoreDialogFocus(dialog));
   dialog.addEventListener("click", event => {
     const rect = dialog.getBoundingClientRect();
     if (event.target === dialog && (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom)) dialog.close();
@@ -257,18 +259,15 @@ const CAPABILITIES = [
   ["find_object", "Find your belongings", "Look up where Pam last saw something and show its saved photo.", "Where did I leave my glasses?"],
   ["get_schedule", "Check your calendar", "Read today's events from your connected calendar.", "What do I have planned today?"],
   ["get_reminders", "Read your reminders", "Hear the reminders you've already saved.", "What are my reminders?"],
-  ["set_reminder", "Set a reminder", "Save a reminder. Spoken alerts need Pam to stay open and connected.", "Remind me to call Sarah in ten minutes."],
+  ["set_reminder", "Set a reminder", "Save a reminder. Spoken alerts need Pam to stay open and connected.", "Remind me to drink water in ten minutes."],
   ["get_time_and_place", "Know the day and where you are", "Hear today's date, the time, where you are, and what is next.", "What day is it? Where am I?"],
   ["check_pills_taken", "Check on your pills", "Hear what is recorded about your pills. Pam cannot see whether you took them, so she only reports what you told her.", "Did I take my pills?"],
   ["get_weather", "Check the weather", "Get the current weather for your saved home location.", "What's the weather like?"],
   ["who_is_this", "Recognise a person", "Name someone the camera can see, if they have been introduced before.", "Who is this?"],
   ["save_face", "Remember a person", "Store the face the camera can see under a name. Nothing is kept until you give one.", "This is my son Jacob."],
-  ["call_contact", "Call someone", "Prepare a call to a saved contact using your phone or a connected calling service.", "Help me call Sarah."],
-  ["call_caregiver", "Reach your caregiver", "Get help contacting the caregiver saved in Pam.", "I'd like to call my caregiver."],
-  ["send_message", "Write a message", "Prepare a message to a saved contact. Sending depends on your phone or messaging service.", "Help me text Sarah that I'm home."],
   ["request_ride", "Prepare a ride", "Open a ride to a saved destination. You confirm the booking in Uber.", "Help me get a ride to the airport."],
   ["show_photo", "See a familiar face", "Show family photos that your helper has added to Pam.", "Show me a photo of Sarah."],
-  ["search_flights", "Look for a flight", "Open flight-search options. Pam does not buy tickets.", "Find flights to New York."],
+  ["search_flights", "Look for a flight", "Hear available flight options when a flight service is connected. Pam does not buy tickets.", "Find flights to New York."],
   ["fetch_object", "Retrieve an item", "Ask a connected robot for help. This needs the robot service and setup.", "Can the robot bring my medicine?"],
   ["guide_me", "Take it step by step", "Talk through an everyday task one step at a time, at your pace.", "Help me make a cup of tea."]
 ];
@@ -938,9 +937,6 @@ const handlers = {
   show_photo:    (a) => api(`/api/photo-info?name=${encodeURIComponent(a.name)}`),
   search_flights:(a) => api(`/api/flights?destination=${encodeURIComponent(a.destination)}&date=${encodeURIComponent(a.date || "")}`),
   set_reminder:  (a) => api(`/api/reminders`, { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(a) }),
-  send_message:  (a) => api(`/api/message`, { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(a) }),
-  call_contact:  (a) => api(`/api/call`, { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(a) }),
-  call_caregiver:() => api(`/api/call`, { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({ name: "__caregiver__" }) }),
   request_ride:  (a) => api(`/api/ride`, { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(a) }),
   fetch_object:  (a) => api(`/api/fetch`, { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(a) }),
   who_is_this:   () => api(`/api/face/who`),
@@ -1175,7 +1171,7 @@ $("memory-next").onclick = () => selectMemoryObservation(memoryIndex + 1);
 $("memory-dialog").addEventListener("close", () => {
   if (!$("memory-dialog").returnFocus?.isConnected && memoryOrigin) {
     const target = findMemoryButton($(memoryOrigin.list), memoryOrigin.object, memoryOrigin.id) || $("tab-" + currentView);
-    target.focus({ preventScroll: true });
+    restoreDialogFocus($("memory-dialog"), target);
   }
 });
 renderMemoryHistory();
@@ -1237,20 +1233,6 @@ for (const [id, key] of [["large-text", "large"], ["high-contrast", "contrast"],
   input.onchange = () => { apply(); try { localStorage.setItem(`pam-${key}`, String(input.checked)); } catch {} };
 }
 
-async function quickHelp(button, action) {
-  selectView("talk");
-  button.disabled = true;
-  try {
-    const out = await action();
-    if (out.card) showCard(out.card);
-    if (out.photo) showPhoto(out.photo);
-    say(out.say || "Your information is ready.");
-    log("a", out.say || "Your information is ready.");
-    if (out.card) els.card.focus();
-  } catch { say("That didn't connect. Please try again.", true); }
-  finally { button.disabled = false; }
-}
-$("caregiver").onclick = () => quickHelp($("caregiver"), () => api("/api/caregiver-card"));
 voiceVisual = createVoiceVisual();
 setVoiceState("idle");
 window.addEventListener("pagehide", () => { stop(); stopCamera(); es.close(); voiceVisual?.dispose(); captionResize.disconnect(); });
@@ -1274,8 +1256,6 @@ if (location.search.includes("demo")) {
     check_pills_taken: {}, simulate_bottle_moved: {},
     search_flights: { destination: "New York", date: "next Friday" },
     set_reminder: { text: "take your medication", in_minutes: 1 },
-    send_message: { to: "Sarah", message: "thinking of you" },
-    call_contact: { name: "Sarah" }, call_caregiver: {},
     request_ride: { destination: "airport" }, fetch_object: { item: "pill bottle" },
   };
   for (const [name, args] of Object.entries(tests)) {

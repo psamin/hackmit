@@ -695,8 +695,33 @@ Model weights are gitignored too and shared out of band.
 - Reminder tests cover tomorrow/past-clock parsing, validation, due delivery,
   and persistence of fired flags. The scheduler must save the modified list,
   not re-read the old file and accidentally discard fired=True changes.
-- Capability claims must distinguish API/card tests from real delivery. Default
-  contacts use placeholder phone numbers, Google Flights/Uber are handoffs,
-  Twilio's enabled path still bypasses the promised second confirmation, and
-  fetch_object starts a configured robot policy without passing the item name.
-  Do not enable or live-test those side effects without explicit user approval.
+- Texting and calling were removed at the user's request: no send_message,
+  call_contact, or call_caregiver tools, no message/call/caregiver-card endpoints,
+  and no Get help calling button. Contacts still supply family-photo captions.
+  Do not reintroduce phone or SMS actions through a merge or fallback.
+- Capability claims must distinguish API/card tests from real delivery. Uber is
+  an external-app handoff, and fetch_object starts a configured robot policy
+  without passing the item name. Do not live-test side effects without approval.
+- Voice is the primary interface. Flight function results must contain the actual
+  offer details in `say`, because only `say` reaches the voice model. Do not put
+  essential information solely in a card or tell the user to look at a screen.
+  Flights no longer fall back to a Google Flights link when credentials are absent.
+- Flight searches use AMADEUS_ENV=test by default and label cached test offers as
+  non-live examples. Production credentials plus AMADEUS_ENV=production are needed
+  for real-time quotes. Never silently switch to production or buy tickets.
+  One-way/one-adult offers include airports, local dates/times, airline, stops,
+  total price and its actual currency; the voice agent presents one at a time.
+- Uber handoff responses explain the limitation through speech and can
+  retain optional helper cards. Do not equate prompt-level verbal approval with a
+  server-enforced confirmation gate. Restart the voice session after prompt changes.
+- When integrating main, preserve its caregiver dashboard PIN gate and medication
+  confirmation/kill-switch protections. Removing calling also removes medication
+  escalation tel: links, not the instruction to check with a caregiver or the
+  person's explicit dose-confirmation controls.
+- get_time_and_place must consume the shared calendar() result, not independently
+  reopen demo.ics. A not_connected/unavailable calendar maps to unknown, not an
+  empty day. Orientation, dose-safety, and caregiver-auth suites must pass along
+  with the capability and browser suites when these branches are merged.
+- Native dialog close events can arrive after the user focuses another control.
+  Only restore focus when it is on the document body or still inside that dialog;
+  unconditional restoration can steal focus from keyboard tab navigation.

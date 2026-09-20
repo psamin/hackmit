@@ -47,7 +47,7 @@ class CapabilityTests(unittest.TestCase):
                                         REMINDERS=self.reminders, CONTACTS=CONTACTS, _fired=set(), _subscribers=set()))
         self.enterContext(patch.dict(os.environ, {key: "" for key in (
             "CALENDAR_ICS_URL", "GOOGLE_CALENDAR_CLIENT_ID", "GOOGLE_CALENDAR_CLIENT_SECRET",
-            "TWILIO_SID", "TWILIO_TOKEN", "TWILIO_FROM", "USER_PHONE", "AMADEUS_KEY", "AMADEUS_SECRET")}))
+            "AMADEUS_KEY", "AMADEUS_SECRET")}))
         self.enterContext(patch.object(gc, "calendar_service", gc.CalendarService(Path(self.temp.name) / "credentials.dat")))
         self.client = TestClient(app.app)
         self.addCleanup(self.client.close)
@@ -96,26 +96,15 @@ class CapabilityTests(unittest.TestCase):
         self.assertIsNone(app.contact(""))
         self.assertIsNone(app.contact("S"))
         self.assertEqual(app.contact("Sarah")["name"], "Sarah")
-        self.assertEqual(app.contact("__caregiver__")["name"], "Sam")
+        self.assertIsNone(app.contact("__caregiver__"))
 
-    def test_message_call_and_caregiver_cards(self):
-        sms = self.client.post("/api/message", json={"to": "Sarah", "message": "Hello & goodbye"}).json()
-        self.assertTrue(sms["card"]["action"]["href"].startswith("sms:"))
-        self.assertIn("Hello%20%26%20goodbye", sms["card"]["action"]["href"])
-        for name in ("Sarah", "__caregiver__"):
-            result = self.client.post("/api/call", json={"name": name}).json()
-            self.assertTrue(result["card"]["action"]["href"].startswith("tel:"))
-        self.assertIn("confirm", self.client.get("/api/caregiver-card").json()["card"]["body"])
-
-    def test_twilio_paths_use_only_mock_provider(self):
-        provider = MagicMock()
-        with patch.object(app, "twilio", return_value=(provider, "+15550100003")), patch.dict(os.environ, {"USER_PHONE": "+15550100004"}):
-            result = self.client.post("/api/message", json={"to": "Sarah", "message": "Test"}).json()
-            self.assertIn("texted", result["say"])
-            provider.messages.create.assert_called_once()
-            result = self.client.post("/api/call", json={"name": "Sarah"}).json()
-            self.assertIn("ring", result["say"])
-            provider.calls.create.assert_called_once()
+    def test_calling_and_texting_are_removed(self):
+        removed = {"send_message", "call_contact", "call_caregiver"}
+        self.assertTrue(removed.isdisjoint(f["name"] for f in app.FUNCTIONS))
+        self.assertEqual(self.client.post("/api/message", json={"to": "Sarah", "message": "Test"}).status_code, 404)
+        self.assertEqual(self.client.post("/api/call", json={"name": "Sarah"}).status_code, 404)
+        self.assertEqual(self.client.get("/api/caregiver-card").status_code, 404)
+        self.assertNotIn("twilio", self.client.get("/api/health").json())
 
     def test_ride_requires_a_destination_and_only_creates_a_link(self):
         result = self.client.post("/api/ride", json={"destination": ""}).json()
@@ -123,10 +112,85 @@ class CapabilityTests(unittest.TestCase):
         result = self.client.post("/api/ride", json={"destination": "airport"}).json()
         self.assertTrue(result["card"]["action"]["href"].startswith("https://m.uber.com/"))
 
-    def test_flights_fallback_is_a_search_not_a_booking(self):
+    def test_flights_without_provider_are_voice_only_and_honest(self):
         result = self.client.get("/api/flights", params={"destination": "New York", "date": "next Friday"}).json()
-        self.assertIn("flight search", result["say"])
-        self.assertTrue(result["card"]["action"]["href"].startswith("https://www.google.com/travel/flights"))
+        self.assertEqual(result["status"], "not_configured")
+        self.assertEqual(result["offers"], [])
+        self.assertIn("not connected", result["say"])
+        self.assertNotRegex(result["say"].lower(), r"\b(screen|tap|click|link)\b")
+        self.assertNotIn("card", result)
+
+    def flight_fixture(self, mode="production", provider_status=200, empty=False):
+        travel_date = (datetime.now() + timedelta(days=7)).date().isoformat()
+        payload = {"dictionaries": {"carriers": {"AA": "Example Air"}}, "data": [] if empty else [
+            {"id": "test-offer", "price": {"total": "125.40", "currency": "EUR"}, "itineraries": [{"segments": [
+                {"carrierCode": "AA", "departure": {"iataCode": "BOS", "at": travel_date + "T08:30:00"},
+                 "arrival": {"iataCode": "JFK", "at": travel_date + "T10:00:00"}, "numberOfStops": 0}]}]}]}
+        requests = []
+        def respond(request):
+            requests.append(request)
+            if request.url.path.endswith("/token"):
+                return httpx.Response(200, json={"access_token": "fixture-access"})
+            return httpx.Response(provider_status, json=payload if provider_status == 200 else {"error": "fixture-secret"})
+        original = httpx.AsyncClient
+        with patch.dict(os.environ, {"AMADEUS_KEY": "fixture-client", "AMADEUS_SECRET": "fixture-secret", "AMADEUS_ENV": mode}), \
+             patch.object(app.httpx, "AsyncClient", side_effect=lambda **kw: original(transport=httpx.MockTransport(respond), **kw)):
+            output = self.client.get("/api/flights", params={"destination": "New York", "date": travel_date}).json()
+        return output, requests
+
+    def test_flight_options_are_complete_spoken_answers(self):
+        result, requests = self.flight_fixture()
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(len(result["offers"]), 1)
+        for value in ("Example Air", "8:30 AM", "10:00 AM", "125.40", "euros", "nonstop", "BOS", "JFK"):
+            self.assertIn(value, result["say"])
+        self.assertNotRegex(result["say"].lower(), r"\b(screen|tap|click|link)\b")
+        self.assertNotIn("card", result)
+        self.assertEqual([r.method for r in requests], ["POST", "GET"])
+        self.assertEqual(requests[-1].url.host, "api.amadeus.com")
+
+    def test_spoken_connections_keep_the_returned_currency(self):
+        result = app.spoken_flight_offer({"price": {"total": "280.00", "currency": "CAD"}, "itineraries": [{"segments": [
+            {"carrierCode": "AA", "departure": {"iataCode": "BOS", "at": "2027-05-08T08:00:00"}, "arrival": {"iataCode": "ORD", "at": "2027-05-08T09:00:00"}},
+            {"carrierCode": "BB", "departure": {"iataCode": "ORD", "at": "2027-05-08T10:00:00"}, "arrival": {"iataCode": "SFO", "at": "2027-05-08T13:00:00"}}]}]},
+            {"AA": "Example Air", "BB": "Sample Air"})
+        self.assertEqual(result["stops"], 1)
+        self.assertEqual(result["currency"], "CAD")
+        self.assertIn("Example Air and Sample Air", result["summary"])
+        self.assertIn("Canadian dollars", result["summary"])
+        self.assertIn("1 stop", result["summary"])
+
+    def test_sandbox_flight_prices_are_labelled_as_test_data(self):
+        result, requests = self.flight_fixture(mode="test")
+        self.assertTrue(result["is_demo"])
+        self.assertIn("not live", result["say"])
+        self.assertEqual(requests[-1].url.host, "test.api.amadeus.com")
+
+    def test_flight_provider_error_is_not_no_results(self):
+        result, _ = self.flight_fixture(provider_status=503)
+        self.assertEqual(result["status"], "unavailable")
+        self.assertNotIn("fixture-secret", json.dumps(result))
+        self.assertNotRegex(result["say"].lower(), r"\b(screen|tap|click|link)\b")
+        result, _ = self.flight_fixture(empty=True)
+        self.assertEqual(result["status"], "no_offers")
+        self.assertEqual(result["offers"], [])
+
+    def test_flight_date_is_requested_instead_of_guessed(self):
+        with patch.dict(os.environ, {"AMADEUS_KEY": "fixture-client", "AMADEUS_SECRET": "fixture-secret"}), \
+             patch.object(app.httpx, "AsyncClient", side_effect=AssertionError("Must ask for a date first")):
+            result = self.client.get("/api/flights", params={"destination": "New York"}).json()
+        self.assertEqual(result["status"], "needs_date")
+        self.assertIn("day", result["say"])
+
+    def test_voice_prompt_and_action_fallbacks_do_not_assume_a_screen(self):
+        self.assertIn("voice-first", app.SYSTEM_PROMPT)
+        self.assertNotIn("button will appear on their screen", app.SYSTEM_PROMPT)
+        flight = next(f for f in app.FUNCTIONS if f["name"] == "search_flights")
+        self.assertNotIn("screen", flight["description"])
+        results = [self.client.post("/api/ride", json={"destination": "airport"}).json()]
+        for result in results:
+            self.assertNotRegex(result["say"].lower(), r"\b(screen|tap|click)\b")
+            self.assertIn("helper", result["say"])
 
     def test_photo_and_missing_photo(self):
         (self.here / "photos" / "Sarah.jpg").write_bytes(b"test-photo")
@@ -175,12 +239,12 @@ class CapabilityTests(unittest.TestCase):
 
     def test_audited_model_functions_have_expected_contracts(self):
         names = {f["name"] for f in app.FUNCTIONS}
-        audited = {"find_object", "get_schedule", "get_reminders", "set_reminder", "get_weather", "show_photo", "search_flights", "send_message", "call_contact", "call_caregiver", "request_ride", "fetch_object"}
+        audited = {"find_object", "get_schedule", "get_reminders", "set_reminder", "get_weather", "show_photo", "search_flights", "request_ride", "fetch_object"}
         self.assertTrue(audited.issubset(names))
         self.assertEqual(len(names), len(app.FUNCTIONS))
         self.assertIn("exactly ONE step", app.SYSTEM_PROMPT)
         for f in app.FUNCTIONS:
-            if f["name"] in {"send_message", "call_contact", "call_caregiver", "set_reminder", "request_ride", "fetch_object"}:
+            if f["name"] in {"set_reminder", "request_ride", "fetch_object"}:
                 self.assertTrue(f.get("defer_until_eot"))
 
 
@@ -325,9 +389,6 @@ async def audit_voice_routing():
         ("get_weather", "What is the weather at home right now?"),
         ("show_photo", f"Show me a photo of {name}."),
         ("search_flights", "Find flight options to New York next Friday."),
-        ("send_message", f"Text {name} the message: I am home."),
-        ("call_contact", f"Please call {name}."),
-        ("call_caregiver", "Please call my caregiver."),
         ("request_ride", "Help me get an Uber to the airport."),
         ("fetch_object", "Ask the robot arm to fetch my pill bottle."),
         ("guide_me", "Guide me through writing a grocery list, one step at a time."),
@@ -342,7 +403,7 @@ async def audit_voice_routing():
     for expected, question in cases:
         config = app.agent_config()
         config.pop("greeting", None)
-        matched, observed = False, []
+        matched, observed, approved = False, [], False
         try:
             async with connect("wss://agent.deepgram.com/v1/agent/converse", subprotocols=["token", key], open_timeout=15, close_timeout=2) as ws:
                 await ws.send(json.dumps({"type": "Settings", "audio": {"input": {"encoding": "linear16", "sample_rate": 16000}, "output": {"encoding": "linear16", "sample_rate": 24000}}, "agent": config}))
@@ -366,6 +427,9 @@ async def audit_voice_routing():
                             if matched:
                                 break
                         break
+                    elif expected in {"request_ride", "fetch_object"} and not approved and message.get("type") == "ConversationText" and message.get("role") == "assistant" and "?" in message.get("content", ""):
+                        approved = True
+                        await ws.send(json.dumps({"type": "InjectUserMessage", "content": "Yes, I approve the action as you just described it."}))
                     elif expected == "guide_me" and message.get("type") == "ConversationText" and message.get("role") == "assistant":
                         observed.append(message.get("content", "")[:220])
                     elif expected == "guide_me" and message.get("type") == "AgentAudioDone":

@@ -6,6 +6,7 @@ import sys
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import orientation as o  # noqa: E402
@@ -123,6 +124,26 @@ class Calendar(unittest.TestCase):
     def test_event_starting_exactly_now_counts_as_next(self):
         r = o.describe(SAT_2PM, HOME, [(SAT_2PM, "Pills")])
         self.assertEqual(r["next_event"]["title"], "Pills")
+
+
+class CalendarSource(unittest.IsolatedAsyncioTestCase):
+    async def test_orientation_reads_the_shared_calendar_integration(self):
+        reader = AsyncMock(return_value={"status": "connected", "events": [
+            {"title": "Birthday", "_dt": "2026-09-19", "all_day": True},
+            {"title": "Dinner", "_dt": "2026-09-19T22:30:00Z", "all_day": False}]})
+        with patch.object(o, "datetime") as clock:
+            clock.now.return_value.astimezone.return_value = SAT_2PM
+            clock.fromisoformat.side_effect = datetime.fromisoformat
+            result = await o.time_and_place(HOME, calendar_reader=reader)
+        reader.assert_awaited_once_with()
+        self.assertEqual(result["next_event"], {"title": "Dinner", "time": "6:30 PM"})
+
+    async def test_unconnected_calendar_does_not_fall_back_to_demo(self):
+        reader = AsyncMock(return_value={"status": "not_connected", "events": []})
+        result = await o.time_and_place(HOME, calendar_reader=reader)
+        self.assertIn("couldn't check your calendar", result["say"])
+        self.assertNotIn("nothing else planned", result["say"])
+        self.assertIsNone(result["next_event"])
 
 
 class Shape(unittest.TestCase):

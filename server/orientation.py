@@ -29,21 +29,17 @@ a 4 PM dinner, so every event is converted to the timezone of `now` before it is
 or spoken. Floating times (no zone in the feed) are read as local. All-day events are not
 timed, so they are not offered as "next".
 
-KNOWN LIMITS: recurring events (RRULE) are not expanded, and there is no end time, so an
-event already in progress is not reported.
+KNOWN LIMIT: an event already in progress is not reported as next. Calendar data comes
+from the shared calendar integration, including Google's recurring-event expansion.
 """
 from __future__ import annotations
 
-import os
 from datetime import datetime
-from pathlib import Path
 
 try:  # imported as a top-level module when server/app.py runs
     from places import phrase as place_phrase
 except ImportError:  # pragma: no cover - only when imported from elsewhere
     place_phrase = lambda loc: ""
-
-HERE = Path(__file__).resolve().parent
 
 # A fix older than this is not "where you are" any more. The caller supplies the age; the
 # server does not record one yet, in which case None means "assume it is current".
@@ -131,22 +127,23 @@ def describe(now: datetime, fix: dict | None, events: list[tuple[datetime, str]]
     }
 
 
-async def _calendar_text() -> str | None:
-    """The same sources server/app.py's /api/calendar uses: the published feed, else demo.ics."""
-    src = os.environ.get("CALENDAR_ICS_URL")
-    if src:
-        import httpx
-        async with httpx.AsyncClient() as c:
-            return (await c.get(src, timeout=10)).text
-    demo = HERE / "demo.ics"
-    return demo.read_text(encoding="utf-8") if demo.exists() else None
-
-
-async def time_and_place(fix: dict | None, fix_age_s: float | None = None) -> dict:
+async def time_and_place(fix: dict | None, fix_age_s: float | None = None, calendar_reader=None) -> dict:
     now = datetime.now().astimezone()
+    events = None
     try:
-        text = await _calendar_text()
-        events = parse_events(text, now) if text is not None else None
+        if calendar_reader is None:
+            from app import calendar as calendar_reader
+        result = await calendar_reader()
+        if result.get("status") == "connected":
+            events = []
+            for event in result["events"]:
+                if event.get("all_day"):
+                    continue
+                start = datetime.fromisoformat(event["_dt"].replace("Z", "+00:00"))
+                start = start.replace(tzinfo=now.tzinfo) if start.tzinfo is None else start.astimezone(now.tzinfo)
+                if start.date() == now.date():
+                    events.append((start, event["title"]))
+            events.sort()
     except Exception:
         events = None
     return describe(now, fix, events, fix_age_s)
