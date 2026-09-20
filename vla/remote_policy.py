@@ -47,6 +47,10 @@ class RemotePolicyModuleConfig(ModuleConfig):
     # seconds. Re-predict partway through instead, and cross-fade the seam.
     exec_fraction: float = Field(default=0.6, gt=0.05, le=1.0)  # how much of a chunk to run before re-predicting
     blend_steps: int = Field(default=10, ge=0)  # actions over which a new chunk fades in over the old one
+    # A critically damped second-order filter over the commanded positions. Damping ratio 1 is the fastest
+    # convergence that never overshoots, which matters here: overshoot near the bottle would knock it over.
+    # 0 disables it. Higher follows the policy more tightly; lower is smoother but lags.
+    damping_hz: float = Field(default=3.0, ge=0)
 
 
 class RemotePolicyModule(Module):
@@ -68,6 +72,8 @@ class RemotePolicyModule(Module):
         self._thread: Thread | None = None
         self._chunks_accepted = 0
         self._pending_tail: np.ndarray | None = None
+        self._damp_x: np.ndarray | None = None  # filter position, carried across chunks so seams stay smooth
+        self._damp_v: np.ndarray | None = None
         self._last_error: str | None = None
         self._active = False
 
@@ -212,6 +218,7 @@ class RemotePolicyModule(Module):
                 raise RuntimeError("policy preflight has not passed")
             self._request("POST", "/reset", {})
             self._pending_tail = None
+            self._damp_x = self._damp_v = None
             steps, width = info["n_action_steps"], len(self.config.joint_names)
             while not self._stop_event.is_set():
                 with self._lock:
@@ -235,7 +242,10 @@ class RemotePolicyModule(Module):
                                    joints=[n for n, c in zip(self.config.joint_names, clipped, strict=True) if c])
                 if self._stop_event.is_set():
                     break
-                result = self._control.execute_trajectory(self._trajectory(state, bounded))
+                run_steps = max(1, int(steps * self.config.exec_fraction))
+                self._pending_tail = bounded[run_steps:]  # what the arm would have done had it kept going
+                smoothed = self._damp(bounded, state, run_steps)
+                result = self._control.execute_trajectory(self._trajectory(state, smoothed))
                 if result.status is TrajectoryExecutionStatus.START_STATE_MISMATCH:
                     self._wait_for_newer_joint_state(state_ts)
                     continue
@@ -243,8 +253,6 @@ class RemotePolicyModule(Module):
                     raise RuntimeError(result.message or f"trajectory rejected: {result.status.name}")
                 with self._lock:
                     self._chunks_accepted += 1
-                run_steps = max(1, int(steps * self.config.exec_fraction))
-                self._pending_tail = bounded[run_steps:]  # what the arm would have done had it kept going
                 self._stop_event.wait(run_steps / self.config.fps)
         except Exception as exc:
             with self._lock:
@@ -267,6 +275,35 @@ class RemotePolicyModule(Module):
             thread.join(self.config.request_timeout_s + 1.0)  # a request in flight finishes or times out first
             if thread.is_alive():
                 self._cancel_trajectory()
+
+    def _damp(self, actions: np.ndarray, state: np.ndarray, keep_steps: int) -> np.ndarray:
+        """Run the commanded positions through a critically damped filter, so the arm eases rather than snaps.
+
+        x'' = w^2 (target - x) - 2 w x', integrated semi-implicitly at the action rate. Damping ratio 1 means it
+        converges as fast as it can without ever overshooting the policy's target. The filter's state carries over
+        to the next chunk - saved as of `keep_steps`, the action the next prediction will start from - so the seam
+        between chunks stays smooth instead of restarting the filter and creating the jerk it is meant to remove.
+        """
+        if self.config.damping_hz <= 0:
+            return actions
+        dt = 1.0 / self.config.fps
+        w = 2.0 * np.pi * self.config.damping_hz
+        # The exact step of x'' + 2*w*x' + w^2*x = w^2*target over a constant target, rather than an Euler step.
+        # Euler rings above about 2 Hz here and diverges above 4; this form is stable at any frequency.
+        decay = float(np.exp(-w * dt))
+        x = self._damp_x if self._damp_x is not None else state.astype(np.float32).copy()
+        v = self._damp_v if self._damp_v is not None else np.zeros_like(x)
+        out = np.empty_like(actions)
+        saved = None
+        for i, target in enumerate(actions):
+            gap = x - target
+            x = target + (gap * (1.0 + w * dt) + v * dt) * decay
+            v = (v * (1.0 - w * dt) - gap * (w * w * dt)) * decay
+            out[i] = x
+            if i == keep_steps - 1:
+                saved = (x.copy(), v.copy())
+        self._damp_x, self._damp_v = saved if saved else (x, v)
+        return out
 
     def _trajectory(self, state: np.ndarray, actions: np.ndarray) -> JointTrajectory:
         zeros = [0.0] * len(self.config.joint_names)
