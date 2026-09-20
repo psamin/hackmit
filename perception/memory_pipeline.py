@@ -61,6 +61,7 @@ SNAPSHOT_EVERY_S = 1.0
 # tracks need them within 2.0s (ID-switch donor) and 0.5s (lost-then-placed).
 TRACK_TTL_S = ACTIVE_WINDOW_S + 2.0
 PRUNE_EVERY_S = 2.0   # how often to sweep dead tracks out of the table
+KEEP_S = 2.0          # how long a confident sighting lets weaker ones through (see --conf-keep)
 
 
 def ego_homography(prev_g, g, boxes):
@@ -218,6 +219,14 @@ def main():
     # stays at ultralytics' 640, which is what every run so far actually used. Drop to 416 on a
     # CPU-only machine; on mps/cuda 640 is already fast enough.
     ap.add_argument("--imgsz", type=int, default=640, help="inference size; 416 roughly triples CPU fps, at some cost to small objects")
+    # Hysteresis. A handheld camera walks the same object back and forth across a single
+    # threshold: measured on one run, the same pill bottle scored 0.56, 0.41, 0.24, 0.16
+    # on consecutive appearances, so a fixed --conf makes it blink in and out and the
+    # tracker keeps losing and re-acquiring it. Two thresholds fix that the way a Schmitt
+    # trigger does: --conf to START believing a class is there, --conf-keep (lower) to GO
+    # ON believing it for KEEP_S afterwards. Default equals --conf, i.e. off.
+    ap.add_argument("--conf-keep", type=float, default=None,
+                    help="lower threshold that sustains an already-seen class (handheld cameras); default: same as --conf")
     ap.add_argument("--device", default=None, help="mps/cuda/cpu; default: best available on this machine")
     ap.add_argument("--cert", help="TLS certificate for a wss:// source (see phone/serve.py)")
     ap.add_argument("--key", help="TLS private key for a wss:// source")
@@ -244,7 +253,8 @@ def main():
     REST_MIN = max(2, round(REST_MIN_S * args.fps))
     LOST_REST_MIN = max(1, round(LOST_REST_MIN_S * args.fps))
     MOVE_THR = MOVE_THR_PER_S / args.fps
-    log("START", f"device={args.device} fps={args.fps} imgsz={args.imgsz} conf={args.conf} "
+    log("START", f"device={args.device} fps={args.fps} imgsz={args.imgsz} "
+                 f"conf={args.conf}{'' if args.conf_keep is None else f'/keep {args.conf_keep}'} "
                  f"static_camera={args.static_camera} arm={'off' if args.no_arm else 'on'}")
     log("START", f"gate: arm after {ACTIVE_MIN} frames of motion, fire after {REST_MIN} frames "
                  f"at rest ({REST_MIN / args.fps:.1f}s), move threshold {MOVE_THR:.4f}/frame")
@@ -282,6 +292,8 @@ def main():
     # What was visible last frame. Logging every frame would be a flood at 5fps and
     # unreadable; what you actually want to see is the moment something appears or goes.
     seen_before = set()
+    conf_keep = args.conf if args.conf_keep is None else min(args.conf_keep, args.conf)
+    last_strong = {}   # class -> when it was last seen above the full --conf
     hud_lock = threading.Lock()
     timing = collections.defaultdict(float)
     n_frames, n_events, t_wall, last_prune = 0, 0, time.perf_counter(), -1e18
@@ -375,13 +387,27 @@ def main():
         diag = float(np.hypot(*g.shape))
 
         t0 = time.perf_counter()
-        r = model.track(frame, persist=True, tracker="botsort.yaml", conf=args.conf, imgsz=args.imgsz,
+        # The model runs at the LOWER threshold so the tracker keeps seeing a weak object
+        # and holds its ID; the hysteresis below decides what the trigger is allowed to act on.
+        r = model.track(frame, persist=True, tracker="botsort.yaml", conf=conf_keep, imgsz=args.imgsz,
                         device=args.device, verbose=False)[0]
         timing["detect_track"] += time.perf_counter() - t0
 
         boxes = r.boxes.xyxy.cpu().numpy() if len(r.boxes) else np.zeros((0, 4))
         names = [r.names[int(c)] for c in r.boxes.cls] if len(r.boxes) else []
         ids = r.boxes.id.int().tolist() if r.boxes.id is not None else [-1] * len(names)
+        confs = r.boxes.conf.cpu().numpy() if len(r.boxes) else np.zeros(0)
+
+        if conf_keep < args.conf:
+            for n, c in zip(names, confs):
+                if c >= args.conf:
+                    last_strong[n] = t
+            keep = [i for i, (n, c) in enumerate(zip(names, confs))
+                    if c >= args.conf or t - last_strong.get(n, -1e18) <= KEEP_S]
+            boxes = boxes[keep] if len(keep) else np.zeros((0, 4))
+            names = [names[i] for i in keep]
+            ids = [ids[i] for i in keep]
+            confs = confs[keep] if len(keep) else np.zeros(0)
         frame_area = frame.shape[0] * frame.shape[1]
         arms = [] if args.no_arm else [
             b for b, n in zip(boxes, names)
@@ -508,7 +534,6 @@ def main():
         if args.show:
             now = time.perf_counter()
             shown_fps = n_frames / max(now - t_wall, 1e-6)
-            confs = r.boxes.conf.cpu().numpy() if len(r.boxes) else []
             with hud_lock:
                 snapshot = dict(hud)
             cv2.imshow("Compass - memory pipeline",
