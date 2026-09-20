@@ -16,12 +16,19 @@ seeing that nobody did (the pills may come from a pillbox; the detector may have
 So the camera only ever *prompts a question*. A dose counts as taken only when the person,
 or their caregiver, taps "Yes, I took them". Nothing here decides that on the camera's word.
 
-The dangerous case is a memory-impaired user asking "did I take my pills?" and being told
-"no". That answer can cause a second dose. So Pam never says the user has NOT taken them:
+Pam answers the question plainly. Until a dose is confirmed the answer is "no, not yet":
 
     recorded    "You marked your pills as taken at 8:05 AM."
-    unrecorded  "I don't have a record that you took your pills. I can't see inside the bottle.
-                 Please check with Mike or your pill organiser before taking any pills."
+    unrecorded  "No, you haven't taken your pills yet. ... Please check with Mike or your
+                 pill organiser before taking any."
+
+This was a deliberate product decision, taken over the earlier wording ("I don't have a
+record that you took your pills"), which tested as vague to the person it is for. Know
+what it costs: the state tracked here is a RECORD, not the inside of the bottle, so a
+person who took their pills without tapping will be told "no". For a memory-impaired user
+that can prompt a second dose, which is why every unconfirmed answer still ends by
+referring them to their caregiver or pill organiser before taking anything. Do not remove
+that sentence -- it is the only thing standing between a clear answer and a double dose.
 
 For the same reason no prompt ever tells the user to take a pill. Prompts ask a question
 and, in the same breath, say to check with the caregiver if unsure.
@@ -212,6 +219,11 @@ class Dose:
                 and not self.unconfirmed and not self.skipped)
 
 
+def _how(e: dict) -> str:
+    """How an answer arrived: "voice" (said to Pam), "robot" (the arm handed the pills over) or "tap". Old lines: a tap."""
+    return e.get("via") or ("robot" if e.get("by") == "robot" else "tap")
+
+
 def replay(events: list[dict]) -> dict:
     """Rebuild every dose from the log. An event names one dose (`dose`) or a whole group at once (`doses`)."""
     doses: dict = {}
@@ -236,10 +248,10 @@ def replay(events: list[dict]) -> dict:
                 d.asked, d.last_spoken = True, ts
             elif kind == "confirmed":
                 if d.confirmed_ts is None:
-                    d.confirmed_ts, d.via = ts, e.get("via") or "tap"
+                    d.confirmed_ts, d.via = ts, _how(e)
             elif kind == "confirmed_late":
                 if d.late_ts is None:
-                    d.late_ts, d.via = ts, e.get("via") or "tap"
+                    d.late_ts, d.via = ts, _how(e)
             elif kind == "handoff":
                 d.handoff_at = d.handoff_at or ts
             elif kind == "handoff_asked":
@@ -320,9 +332,9 @@ def ask_messages(d: Dose, cg: dict, saw_bottle: bool) -> list[dict]:
 
 
 def escalate_messages(d: Dose, cg: dict) -> list[dict]:
-    say = f"I still don't have a record of your pills. Please check with {cg['name']} before taking any pills."
+    say = f"You still haven't taken your pills. Please check with {cg['name']} before taking any pills."
     card = {"title": f"Please check with {cg['name']}",
-            "body": f"I don't have a record that you took your pills. {cg['name']} can help you check.",
+            "body": f"You haven't taken your pills yet. {cg['name']} can help you check.",
             "action2": _answer_actions(d.id)["action"]}
     return [{"type": "speak", "text": say}, {"type": "card", "card": card}]
 
@@ -368,9 +380,9 @@ def ask_group_messages(members: list[Dose], cg: dict, saw_bottle: bool) -> list[
 
 
 def escalate_group_messages(members: list[Dose], cg: dict) -> list[dict]:
-    say = f"I still don't have a record of your {_names(members)}. Please check with {cg['name']} before taking any pills."
+    say = f"You still haven't taken your {_names(members)}. Please check with {cg['name']} before taking any pills."
     card = {"title": f"Please check with {cg['name']}",
-            "body": f"I don't have a record that you took your {_names(members)}. {cg['name']} can help you check.",
+            "body": f"You haven't taken your {_names(members)} yet. {cg['name']} can help you check.",
             "action2": _group_actions(members[0].group, len(members))["action"]}
     return [{"type": "speak", "text": say}, {"type": "card", "card": card}]
 
@@ -713,7 +725,7 @@ def _scheduled_status(today: list[Dose], scheduled: list[Dose], cg: dict, upcomi
         if waiting:
             waiting_groups.setdefault(waiting, []).append(name)
     parts = [f"You marked your {_list(names)} as taken at {_times(list(stamps))}." for stamps, names in taken_groups.items()]
-    parts += [f"I don't have a record for your {_list(names)} at {_times(list(stamps))}." for stamps, names in waiting_groups.items()]
+    parts += [f"You haven't taken your {_list(names)} from {_times(list(stamps))} yet." for stamps, names in waiting_groups.items()]
     any_taken, unrecorded = bool(taken_groups), bool(waiting_groups)
     extra = [d.confirmed_ts for d in today if d.source == "reminder" and d.confirmed_ts]
     if extra:
@@ -746,7 +758,7 @@ def status(doses: dict, now: float, cg: dict | None = None, upcoming: list | Non
         middle = f"I did see your pill bottle move at {at}, but I can't tell whether you took any."
     else:
         middle = "I haven't seen your pill bottle move, but I can't see everything."
-    say = (f"I don't have a record that you took your pills. {middle} I can't see inside the bottle. "
+    say = (f"No, you haven't taken your pills yet. {middle} I can't see inside the bottle. "
            f"Please check with {cg['name']} or your pill organiser before taking any pills." + _next_line(upcoming))
     card = {"title": "Your pills", "body": say}
     return {"say": say, "card": card, "recorded": False}
@@ -829,6 +841,46 @@ def confirm(dose_id, answer: str, now: float | None = None, *, group: str | None
         append({"type": "not_yet", "dose": d.id, "via": via}, now)
         return {"say": f"Okay. If you're not sure, please check with {cg['name']} before taking any.", "ok": True}
     return {"say": "I didn't understand that answer.", "ok": False}
+
+
+def confirm_by_robot(now: float | None = None, what: str = "pills") -> dict:
+    """The arm handed the medication over: record the dose as taken.
+
+    This is a PRODUCT DECISION that overrides the principle at the top of this file.
+    Everywhere else, the camera only ever produces `evidence` and a person's tap is the
+    only thing that records a dose -- because a bottle moving is not a pill being
+    swallowed. A robot hand-over is the same class of signal: it proves the bottle
+    travelled, not that anything was taken. It is recorded as `confirmed` anyway,
+    because the arm delivering the medication is the moment this product treats as the
+    dose being taken.
+
+    What that costs: if the arm fetches the bottle and the person does not take one,
+    Pam will say they did. The event is written with by="robot" so the log can always
+    tell an arm hand-over apart from a human tap, which is the difference an audit or a
+    caregiver would care about.
+
+    Confirms every dose open today. If none is open -- nothing was scheduled, or it was
+    already answered -- one is opened and immediately confirmed, so "did I take my
+    pills?" answers yes rather than falling back to "no, not yet".
+    """
+    cg = caregiver()
+    if not enabled():
+        return _off(cg)
+    now = time.time() if now is None else now
+    doses = replay(read_events())
+    open_today = [d for d in doses.values() if _same_day(d.due_ts, now) and d.is_open]
+    if open_today:
+        for d in open_today:
+            append({"type": "confirmed", "dose": d.id, "by": "robot"}, now)
+        names = _list([d.name or "pills" for d in open_today])
+    else:
+        did = f"robot-{int(now)}"
+        append({"type": "due", "dose": did, "text": what, "due_ts": now, "source": "robot"}, now)
+        append({"type": "confirmed", "dose": did, "by": "robot"}, now)
+        names = what
+    at = clock(datetime.fromtimestamp(now), with_period=True)
+    return {"ok": True, "recorded": True, "doses": len(open_today) or 1,
+            "say": f"I've noted that you took your {names} at {at}."}
 
 
 def simulate_evidence(now: float | None = None) -> dict:

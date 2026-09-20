@@ -295,10 +295,16 @@ async function refreshCalendarStatus() {
     if (!response.ok) throw new Error("Calendar status unavailable");
     const status = await response.json();
     if (status.connected) label.textContent = "Google Calendar linked. Read-only access.";
-    else if (!status.configured) label.textContent = "Google Calendar is not connected. Your helper needs to add the OAuth client on the laptop.";
-    else label.textContent = status.can_connect_here ? "Connect your Google account to let Pam read today's schedule." : "Finish Google sign-in on the laptop at http://127.0.0.1:8000/.";
-    link.textContent = status.connected ? "Reconnect Google Calendar" : "Connect Google Calendar";
-    link.hidden = !status.configured || !status.can_connect_here;
+    else if (!status.configured) label.textContent = "Calendar isn't set up yet. Your helper can connect it on the laptop.";
+    else label.textContent = status.can_connect_here ? "Connect your Google account to let Pam read today's schedule."
+                                                     : "Your helper can finish connecting the calendar on the laptop.";
+    link.textContent = "Connect Google Calendar";
+    // Once it is connected there is nothing to do, so do not offer a sign-in. The link
+    // goes straight to Google's OAuth consent screen, and a user who taps it expecting
+    // Pam gets asked to approve account access instead -- confusing at best, and for
+    // the person this is built for, a page they cannot safely act on. Reconnecting is a
+    // helper's job on the laptop, not something to surface in the app.
+    link.hidden = status.connected || !status.configured || !status.can_connect_here;
   } catch { label.textContent = "Calendar setup is unavailable. Ask your helper to restart Pam's backend on the laptop."; }
 }
 $("feature-search").oninput = () => {
@@ -923,7 +929,12 @@ $("mic-toggle").onclick = () => {
 const api = async (url, opts) => {
   const r = await fetch(url, opts);
   const j = await r.json().catch(() => ({}));
-  return r.ok ? j : { say: j.say || `Sorry, that didn't work. (${j.error || r.status})` };
+  if (r.ok) return j;
+  // This string is SPOKEN. "Sorry, that didn't work. 500" means nothing to someone
+  // asking where their medication is, and sounds broken. The status code and error go
+  // to the laptop terminal, where the person who can act on them is looking.
+  post_log("api", `${url} -> HTTP ${r.status} ${j.error || ""}`);
+  return { say: j.say || "Sorry, I couldn't do that just now." };
 };
 
 const handlers = {

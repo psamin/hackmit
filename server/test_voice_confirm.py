@@ -268,6 +268,20 @@ class RecordingAHandoff(Base):
         self.assertLessEqual(len(self.kinds("handoff")[0]["item"]), 80)
 
 
+class WhoRecordedIt(Base):
+    def test_an_arm_handover_is_labelled_as_one_not_as_a_tap(self):
+        self.open_dose()
+        d.append({"type": "confirmed", "dose": list(d.replay(self.events()))[0], "by": "robot"}, at(8, 2))
+        self.assertEqual(list(d.replay(self.events()).values())[0].via, "robot")
+        pub = adherence.public(d.adherence_summary(at(8, 30)))
+        self.assertEqual(pub["days"][-1]["doses"][0]["via"], "robot")
+
+    def test_a_spoken_or_tapped_answer_keeps_its_own_label(self):
+        self.assertEqual(d._how({"via": "voice"}), "voice")
+        self.assertEqual(d._how({"via": "tap", "by": "robot"}), "tap")
+        self.assertEqual(d._how({}), "tap")
+
+
 class TheSwitch(Base):
     def test_the_env_switch_stops_recording_and_asking(self):
         self.open_dose()
@@ -588,7 +602,7 @@ class Routes(Base):
         self.assertEqual(r.json()["reason"], "not_medication")
         self.assertEqual(self.kinds("handoff"), [])
 
-    def fetch(self, item, active=True, voice=True, watcher_raises=False):
+    def fetch(self, item, active=True, voice=True, watcher_raises=False, robot_records=False):
         import vla.arm_client as arm_client
         started = []
         if not voice:
@@ -599,6 +613,7 @@ class Routes(Base):
                 raise RuntimeError("no loop")
             started.append(item)
         with mock.patch.object(arm_client, "fetch", lambda url: {"active": active}), \
+                mock.patch.object(self.app.doses, "confirm_by_robot", lambda: {"recorded": robot_records}), \
                 mock.patch.object(self.app, "_watch_handoff", fake_watch):
             r = self.client.post("/api/fetch", json={"item": item})
         return r.json(), started
@@ -608,13 +623,18 @@ class Routes(Base):
         self.assertEqual(started, ["pill bottle"])
         self.assertIn("on its way", r["say"])
 
+    def test_when_the_handoff_already_recorded_the_dose_there_is_nothing_to_ask_so_nothing_is_watched(self):
+        r, started = self.fetch("pill bottle", robot_records=True)
+        self.assertEqual(started, [])
+        self.assertTrue(r["dose_recorded"])
+
     def test_fetching_anything_else_does_not(self):
         self.assertEqual(self.fetch("glasses")[1], [])
 
     def test_an_arm_that_did_not_start_is_not_watched(self):
         r, started = self.fetch("pill bottle", active=False)
         self.assertEqual(started, [])
-        self.assertIn("can't start the arm", r["say"])
+        self.assertIn("Ask your helper to check the arm", r["say"])
 
     def test_with_voice_off_nothing_is_watched(self):
         self.assertEqual(self.fetch("pill bottle", voice=False)[1], [])
