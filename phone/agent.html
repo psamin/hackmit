@@ -233,17 +233,28 @@ async function start() {
     if (token.startsWith("{")) throw new Error(JSON.parse(token).error);
     const config = await (await fetch("/api/agent-config")).json();
 
-    ws = new WebSocket(DG_OVERRIDE || DG_URL, ["token", token]);
-    ws.binaryType = "arraybuffer";
-    ws.onopen = () => ws.send(JSON.stringify({ type: "Settings", audio: {
-      input:  { encoding: "linear16", sample_rate: 16000 },
-      output: { encoding: "linear16", sample_rate: 24000 } }, agent: config }));
-    ws.onmessage = (m) => (typeof m.data === "string" ? onControl(JSON.parse(m.data)) : player.play(m.data));
-    ws.onerror = ws.onclose = () => { if (running) { say("connection lost — tap to restart"); stop(); } };
+    // Handlers must bind the socket instance, not the `ws` global: if start()
+    // fails and is retried while this socket is still CONNECTING, a stale
+    // socket that opens late would send Settings on the WRONG socket (or throw
+    // on a null `ws`), leaving a zombie session that Deepgram kills 10s later
+    // with a confusing "send a Settings message" error.
+    const sock = ws = new WebSocket(DG_OVERRIDE || DG_URL, ["token", token]);
+    sock.binaryType = "arraybuffer";
+    sock.onopen = () => {
+      if (sock !== ws) { sock.close(); return; }   // superseded — don't leave a zombie session
+      sock.send(JSON.stringify({ type: "Settings", audio: {
+        input:  { encoding: "linear16", sample_rate: 16000 },
+        output: { encoding: "linear16", sample_rate: 24000 } }, agent: config }));
+    };
+    sock.onmessage = (m) => {
+      if (typeof m.data === "string") { onControl(JSON.parse(m.data)); return; }
+      if (player) player.play(m.data);   // audio can arrive before mic resolves
+    };
+    sock.onerror = sock.onclose = () => { if (sock === ws && running) { say("connection lost — tap to restart"); stop(); } };
 
-    mic = await startMic();
-    player = makePlayer();
-    await player.ctx.resume();            // audio unlock: we are inside the Start gesture
+    player = makePlayer();                // before mic: greeting audio may
+    await player.ctx.resume();            //   arrive while getUserMedia pends
+    mic = await startMic();               // audio unlock: we are inside the Start gesture
     running = true;
     els.talk.textContent = "Listening";
     els.talk.className = "listening";
@@ -252,7 +263,12 @@ async function start() {
     try { wakeLock = await navigator.wakeLock.request("screen"); } catch {}
     startCamera();   // same user gesture; outlives the voice session on purpose
   } catch (e) {
-    say(e.message || "couldn't start", true);
+    // getUserMedia failures are the common case — say what to do, not just that it failed.
+    say(e.name === "NotAllowedError"
+        ? "Microphone blocked — tap the lock icon left of the address bar, allow Microphone, then reload."
+        : e.name === "NotFoundError" || e.name === "NotReadableError"
+        ? "No microphone available on this device."
+        : (e.message || "couldn't start"), true);
     stop();
   }
 }
@@ -278,8 +294,11 @@ function onControl(m) {
 
 function stop() {
   running = false;
-  if (ws && ws.readyState === WebSocket.OPEN) ws.close();
-  ws = null;
+  // Close in ANY state — a CONNECTING socket that isn't closed opens later as
+  // a zombie session. close() during CONNECTING aborts the handshake cleanly.
+  if (ws) { const s = ws; ws = null;
+            s.onopen = s.onmessage = s.onclose = s.onerror = null;
+            try { s.close(); } catch {} }
   if (mic) { mic.stream.getTracks().forEach(t => t.stop()); mic.ctx.close(); mic = null; }
   if (player) { player.stop(); player.ctx.close(); player = null; }
   if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
