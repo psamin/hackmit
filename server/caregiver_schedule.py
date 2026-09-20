@@ -4,6 +4,7 @@ draft, and save a draft once a person has looked at it.
     GET  /api/caregiver/schedule          the current schedule in words, and recent history
     POST /api/caregiver/schedule/parse    {"text": "..."} -> a DRAFT to review (saves nothing)
     POST /api/caregiver/schedule/save     {"draft_id": "...", "acknowledged": [...]} -> saves exactly that draft
+    POST /api/caregiver/schedule/clear    {"confirm": true} -> saves an empty schedule as a new version (history is kept)
 
 Every route sits behind the caregiver PIN (see caregiver.py). Nothing here can change a schedule
 without a person clicking Save on a draft they were shown; the rules for that live in schedule_parse.py.
@@ -59,8 +60,13 @@ async def current_schedule():
     if not entries:
         return {"exists": False}
     latest = entries[0]
-    prefill = next((_instructions_only(e.source_text) for e in entries
-                    if e.action == "save" and _instructions_only(e.source_text)), "")
+    prefill = ""
+    for e in entries:                                                 # newest first; a clear ends the story: start blank
+        if e.action == "clear":
+            break
+        if e.action == "save" and _instructions_only(e.source_text):
+            prefill = _instructions_only(e.source_text)
+            break
     return {"exists": True, "version": latest.version, "saved_at": latest.ts, "lines": sched.describe(latest.schedule),
             "instructions": prefill,
             "history": [{"version": e.version, "ts": e.ts, "action": e.action, "changes": e.changes} for e in entries[:6]]}
@@ -97,6 +103,21 @@ async def parse(body: dict):
         return _error(exc.message, exc.status)
     DRAFTS.add(draft)
     return draft.public()
+
+
+@router.post("/api/caregiver/schedule/clear")
+async def clear(body: dict):
+    """Empty the schedule. It needs an explicit {"confirm": true}, and it is a new version: nothing is erased."""
+    if body.get("confirm") is not True:
+        return _error("Please confirm that you want to clear the schedule.")
+    try:
+        entry = get_store().clear()
+    except sched.ScheduleError as exc:
+        return _error("; ".join(exc.errors), 409)
+    except sched.ScheduleCorrupt as exc:
+        return _error(str(exc), 500)
+    stopped = doses.withdraw_open_doses("schedule cleared")           # no more nudges about a dose that no longer exists
+    return {"ok": True, "version": entry.version, "lines": [], "reminders_stopped": stopped}
 
 
 @router.post("/api/caregiver/schedule/save")

@@ -16,6 +16,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import doses as d  # noqa: E402
+import schedule as sched  # noqa: E402
 
 T = d.Timing()                               # the real timings: 10 / 20 minutes
 CG = {"name": "Mike", "phone": "+15557654321"}
@@ -52,6 +53,12 @@ class Isolated(unittest.TestCase):
         self.patches = [mock.patch.object(d, "LOG", self.tmp / "doses.jsonl"),
                         mock.patch.object(d, "KILL_FILE", self.tmp / ".dose_check_off"),
                         mock.patch.object(d, "CONTACTS", contacts),
+                        # nothing on this machine may leak in: not the schedule someone saved while trying Pam out, and
+                        # not a switch someone left turned off
+                        mock.patch.object(d, "schedule_store", lambda: sched.Store(self.tmp / "medications.jsonl")),
+                        mock.patch.object(d, "SCHEDULE_KILL_FILE", self.tmp / ".schedule_reminders_off"),
+                        mock.patch.object(d, "STREAK_KILL_FILE", self.tmp / ".streak_off"),
+                        mock.patch.object(d, "VOICE_KILL_FILE", self.tmp / ".voice_confirm_off"),
                         mock.patch.dict(os.environ, {}, clear=False)]
         for p in self.patches:
             p.start()

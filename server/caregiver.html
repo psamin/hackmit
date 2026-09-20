@@ -59,6 +59,8 @@
   button { font: inherit; font-weight: 600; min-height: 52px; padding: 0 24px; border: 0; border-radius: 999px; cursor: pointer; touch-action: manipulation; white-space: nowrap; background: var(--blue); color: var(--on-blue); }
   button:active { transform: scale(.985); }
   button.quiet { background: var(--blue-mist); color: var(--blue-text); min-height: 46px; }
+  button.danger { background: var(--error); color: #fff; }
+  button.quiet.danger { background: var(--error-bg); color: var(--error); }
   button:disabled { opacity: .55; cursor: default; }
   .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 14px; }
   .error { color: var(--error); min-height: 1.5em; margin-top: 10px; font-size: .9rem; }
@@ -141,6 +143,21 @@
         Nothing is saved until you check it and press Save.</p>
 
       <div id="current"></div>
+
+      <div id="clear-area" hidden>
+        <div class="row"><button id="clear-btn" class="quiet danger" type="button">Clear schedule</button></div>
+        <div id="clear-confirm" class="box bad" hidden>
+          <strong>Clear the whole schedule?</strong>
+          <p style="margin-top:6px">Pam will stop reminding about every medication right away, and will not send reminders again until you
+            save a new schedule. Doses already on record stay on record, and earlier versions stay under Recent changes.</p>
+          <div class="row">
+            <button id="clear-yes" class="danger" type="button">Yes, clear it</button>
+            <button id="clear-no" class="quiet" type="button">Keep it</button>
+          </div>
+        </div>
+        <p id="clear-error" class="error" role="alert"></p>
+      </div>
+      <div id="clear-done" class="box good" role="status" hidden></div>
 
       <h3>Instructions</h3>
       <label for="instructions" class="sub" style="font-weight:400">Describe every medication, with the times if you know them.
@@ -243,6 +260,7 @@ async function loadStatus() {
     !b.schedule_reminders ? ["Off", "off"]
     : !b.scheduler_running ? ["Not running", "off"]
     : b.schedule === "active" ? [`On (schedule version ${b.schedule_version})`, "on"]
+    : b.schedule === "empty" ? ["Schedule is empty: no reminders are being sent", "off"]
     : b.schedule === "none" ? ["No schedule saved yet", "off"]
     : b.schedule === "damaged" ? ["Schedule file damaged: no reminders are being sent", "off"]
     : ["Problem reading the schedule", "off"];
@@ -318,6 +336,8 @@ async function loadCurrent() {
   const r = await api("/api/caregiver/schedule");
   if (r.status === 401) return route();
   const box = $("current");
+  $("clear-area").hidden = !(r.ok && r.body.exists && r.body.lines.length);       // nothing to clear: no button
+  if (!$("clear-area").hidden) closeClear();
   if (!r.ok) return fill(box, el("p", r.body.error || "Couldn't load the saved schedule.", "error"));
   if (!r.body.exists) {
     fill(box, el("div", "No schedule has been saved yet.", "box ask"));
@@ -329,7 +349,8 @@ async function loadCurrent() {
       (h.changes.length ? h.changes.join("  |  ") : "no changes")))) ]);
   fill(box,
     el("h3", `Saved schedule (version ${s.version}, ${s.saved_at.replace("T", " ")})`),
-    el("ul", null, "plain", s.lines.length ? s.lines.map((line) => el("li", line)) : [el("li", "No medications.")]),
+    el("ul", null, "plain", s.lines.length ? s.lines.map((line) => el("li", line))
+      : [el("li", "The schedule is empty. Pam is not sending medication reminders.")]),
     history);
   if (!$("instructions").value && s.instructions) $("instructions").value = s.instructions;
 }
@@ -387,6 +408,7 @@ function updateSave() {
 
 $("read-btn").addEventListener("click", async () => {
   $("read-error").textContent = "";
+  $("clear-done").hidden = true;
   resetReview();
   const text = $("instructions").value.trim();
   if (!text) { $("read-error").textContent = "Please type the instructions first."; return; }
@@ -414,6 +436,37 @@ $("save-btn").addEventListener("click", async () => {
   if (!r.ok) { $("save-status").textContent = r.body.error || "Couldn't save."; updateSave(); return; }
   resetReview(`Saved as version ${r.body.version}.`);
   await loadCurrent();
+});
+
+// ---- clearing the schedule: always a second step, never one click ---------------------------------
+function closeClear() {
+  $("clear-confirm").hidden = true;
+  $("clear-btn").hidden = false;
+  $("clear-error").textContent = "";
+}
+$("clear-btn").addEventListener("click", () => {
+  $("clear-done").hidden = true;
+  $("clear-btn").hidden = true;
+  $("clear-confirm").hidden = false;
+  $("clear-no").focus();
+});
+$("clear-no").addEventListener("click", () => { closeClear(); $("clear-btn").focus(); });
+$("clear-yes").addEventListener("click", async () => {
+  $("clear-yes").disabled = true;
+  $("clear-error").textContent = "";
+  const r = await post("/api/caregiver/schedule/clear", { confirm: true });
+  $("clear-yes").disabled = false;
+  if (r.status === 401) return route();
+  if (!r.ok) {
+    $("clear-error").textContent = r.body.error || "Couldn't clear the schedule.";
+    if (r.status === 409) await loadCurrent();                           // it was already empty: show what is really there
+    return;
+  }
+  resetReview();
+  $("instructions").value = "";                                           // the old words belong to the old schedule
+  await Promise.all([loadCurrent(), loadStatus(), loadAdherence()]);
+  $("clear-done").textContent = `Schedule cleared (version ${r.body.version}). Pam is not sending medication reminders.`;
+  $("clear-done").hidden = false;
 });
 
 // ---- signing in and out -------------------------------------------------------------------------

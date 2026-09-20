@@ -71,12 +71,20 @@ class FailsClosed(Base):
 
     def test_the_page_itself_is_served_even_when_off_and_holds_no_data(self):
         os.environ.pop("CAREGIVER_PIN")
-        r = self.client.get("/caregiver")
+        r = self.client.get("/oversight")
         self.assertEqual(r.status_code, 200)
         self.assertIn("isn't set up yet", r.text)
 
+    def test_the_page_lives_at_oversight_and_the_old_address_sends_you_there(self):
+        page = self.client.get("/oversight")
+        self.assertEqual((page.status_code, page.headers["content-type"].split(";")[0]), (200, "text/html"))
+        old = self.client.get("/caregiver", follow_redirects=False)
+        self.assertEqual((old.status_code, old.headers["location"]), (308, "/oversight"))
+        self.assertEqual(self.client.get("/caregiver").text, page.text)          # followed, it is the same page
+        self.assertNotIn("<html", old.text.lower())                              # the old address itself serves no page
+
     def test_the_page_is_called_pam_oversight_everywhere_a_person_reads_it(self):
-        text = self.client.get("/caregiver").text
+        text = self.client.get("/oversight").text
         self.assertIn("<title>Pam oversight</title>", text)
         self.assertEqual(text.count("<h1>Pam oversight</h1>"), 3)      # not set up, sign in, and the page itself
         self.assertNotIn("Caregiver dashboard", text)
@@ -112,7 +120,7 @@ class LoggingIn(Base):
 
     def test_the_pin_never_comes_back_out(self):
         for r in (self.login(), self.login("wrong-pin-99"), self.client.get("/api/caregiver/me"),
-                  self.client.get(PROTECTED), self.client.get("/caregiver")):
+                  self.client.get(PROTECTED), self.client.get("/oversight")):
             self.assertNotIn(PIN, r.text)
             self.assertNotIn(PIN, str(r.headers))
 

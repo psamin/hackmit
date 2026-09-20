@@ -1,4 +1,4 @@
-"""Caregiver access: one shared PIN, no accounts. Everything under /caregiver and
+"""Caregiver access: one shared PIN, no accounts. Everything under /oversight and
 /api/caregiver/ sits behind it.
 
     CAREGIVER_PIN=<6 or more characters>   in server/.env, then restart the server
@@ -41,7 +41,7 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.routing import APIRoute
 
 HERE = Path(__file__).resolve().parent
@@ -108,10 +108,16 @@ def require_caregiver(request: Request) -> None:
         raise HTTPException(status_code=401, detail="Please sign in.")
 
 
-@router.get("/caregiver")
-async def caregiver_page():
+@router.get("/oversight")
+async def oversight_page():
     """The page itself is public; it holds no data and asks /api/caregiver/me who is looking."""
     return FileResponse(PAGE)
+
+
+@router.get("/caregiver")
+async def old_page_address():
+    """The page used to live here. Anyone with the old address saved is sent to the new one."""
+    return RedirectResponse("/oversight", status_code=308)
 
 
 @router.get("/api/caregiver/me")

@@ -649,6 +649,14 @@ class Store:
             self._append(entry.to_json() + "\n")
             return entry
 
+    def clear(self, *, actor: str = "caregiver") -> Entry:
+        """Save an EMPTY schedule as a new version. Earlier versions stay in the history, and nothing is deleted.
+        Raises ScheduleError (nothing written) if there is no schedule, or it is already empty."""
+        current = self.load()
+        if current is None or not current.schedule.medications:
+            raise ScheduleError(["There is no schedule to clear."])
+        return self.save({"medications": []}, actor=actor, action="clear", source_text="Cleared by the caregiver")
+
     def restore(self, version: int, *, actor: str = "caregiver") -> Entry:
         """Save an old version again as a NEW version. History is never rewritten."""
         match = next((e for e in self._entries() if e.version == version), None)

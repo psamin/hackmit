@@ -610,7 +610,7 @@ _last_report = [float("-inf")]
 def schedule_health() -> dict:
     """For Pam oversight: the schedule's state, its version, and whether the scheduler has ticked lately.
 
-    state: "none" | "active" | "damaged" | "error" | "off". "damaged" matters: an unreadable schedule
+    state: "none" | "active" | "empty" | "damaged" | "error" | "off". "empty" is a schedule that was cleared: no reminders. "damaged" matters: an unreadable schedule
     file must never look like "no reminders, all fine". `running` is False if nothing has ticked in 30 s
     (say, the server was started without the watcher), so the state shown is not trusted blindly."""
     at = _HEALTH["at"]
@@ -641,7 +641,7 @@ def _schedule_inputs(schedule_fn, now: float) -> tuple[list, dict]:
     if entry is None:
         _HEALTH.update(state="none", version=None)
         return [], {}
-    _HEALTH.update(state="active", version=entry.version)
+    _HEALTH.update(state="active" if entry.schedule.medications else "empty", version=entry.version)
     saved = datetime.fromisoformat(entry.ts).timestamp()
     today = datetime.fromtimestamp(now).date()
     # yesterday too: a window can run past midnight. And nothing whose window closed before this
@@ -971,6 +971,19 @@ def voice_confirm(answer: str, medication: str | None = None, now: float | None 
     if members[0].source == "schedule":
         return confirm(None, answer, now, group=members[0].group, via="voice")
     return confirm(members[0].id, answer, now, via="voice")
+
+
+def withdraw_open_doses(reason: str, now: float | None = None) -> int:
+    """The schedule was cleared: stop asking about scheduled doses that are still open and whose window has not closed.
+
+    They are logged as `skipped` (with the reason), so they are not prompted and not held against anyone. A dose whose
+    window had already closed keeps its record as it was: clearing the schedule does not rewrite what happened."""
+    now = time.time() if now is None else now
+    live = [d for d in replay(read_events()).values()
+            if d.source == "schedule" and d.is_open and (d.closes_ts is None or now <= d.closes_ts)]
+    if live:
+        append({"type": "skipped", "doses": [d.id for d in live], "reason": reason}, now)
+    return len(live)
 
 
 def adherence_summary(now: float | None = None) -> "adherence.Summary":
