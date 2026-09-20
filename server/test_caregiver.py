@@ -215,15 +215,58 @@ class Lockout(Base):
             self.assertEqual(self.login("still-wrong-1").status_code, 429)
 
 
+class AdherencePage(Base):
+    """The page itself is not run here (it is checked in a browser); these pin what it must and must not contain."""
+
+    def setUp(self):
+        super().setUp()
+        self.text = (Path(__file__).resolve().parent / "caregiver.html").read_text(encoding="utf-8")
+
+    def test_it_loads_the_record_from_the_protected_route_and_renders_it_as_text(self):
+        self.assertIn("/api/caregiver/adherence?days=", self.text)
+        self.assertNotIn("innerHTML", self.text)                                 # names and notes are data, never markup
+        self.assertNotIn("insertAdjacentHTML", self.text)
+        self.assertNotIn("Coming soon", self.text)
+
+    def test_it_says_what_the_record_is_and_is_not(self):
+        self.assertIn("can't see whether a pill was swallowed", self.text)
+        self.assertIn("No answer recorded", self.text)
+        words = self.text.split("const DOSE_TEXT")[1].split("const VIA_TEXT")[0]           # every label a dose or day can get
+        self.assertNotIn("missed", words.lower())                               # not knowing is not the same as missing
+        self.assertNotIn("forgot", words.lower())
+
+    def test_it_says_how_each_answer_arrived(self):
+        self.assertIn("said to Pam", self.text)
+        self.assertIn("tapped on the card", self.text)
+
+    def test_it_shows_when_a_switch_has_been_turned_off(self):
+        self.assertIn("Spoken answers", self.text)
+        self.assertIn("Streak shown to the patient", self.text)
+
+    def test_a_refresh_that_finds_the_session_over_goes_back_to_sign_in(self):
+        body = self.text.split("async function loadAdherence")[1].split("\n}\n")[0]
+        self.assertIn("if (r.status === 401) return route();", body)
+
+
 class Status(Base):
     def test_status_reports_switches_not_data(self):
         self.login()
         body = self.client.get(PROTECTED).json()
         self.assertEqual(set(body), {"medication_check", "demo_timings", "schedule_reminders", "schedule",
-                                     "schedule_version", "scheduler_running", "elasticsearch"})
-        for key in ("medication_check", "demo_timings", "schedule_reminders", "scheduler_running", "elasticsearch"):
+                                     "schedule_version", "scheduler_running", "elasticsearch", "voice_confirm", "streak_shown"})
+        for key in ("medication_check", "demo_timings", "schedule_reminders", "scheduler_running", "elasticsearch",
+                    "voice_confirm", "streak_shown"):
             self.assertIsInstance(body[key], bool, key)
         self.assertIn(body["schedule"], {"none", "active", "damaged", "error", "off"})
+
+    def test_status_shows_when_spoken_answers_or_the_streak_have_been_switched_off(self):
+        self.login()
+        for var, key in (("PAM_VOICE_CONFIRM", "voice_confirm"), ("PAM_STREAK", "streak_shown")):
+            with mock.patch.dict(os.environ, {var: "off"}):
+                self.assertFalse(self.client.get(PROTECTED).json()[key], key)     # switched off must not look like "all fine"
+        with mock.patch.dict(os.environ, {"PAM_DOSE_CHECK": "off"}):
+            body = self.client.get(PROTECTED).json()
+        self.assertEqual((body["voice_confirm"], body["streak_shown"]), (False, False))
 
 
 if __name__ == "__main__":

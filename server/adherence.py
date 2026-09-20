@@ -168,6 +168,15 @@ def on_time_rate(summary: Summary, days: int = 7) -> float | None:
     return None if not settled else sum(s == ON_TIME for s in settled) / len(settled)
 
 
+def answers_by(summary: Summary, days: int = 7) -> dict:
+    """How the answered doses of the last `days` days arrived: {"voice": said to Pam, "tap": tapped on the card}.
+    An answer with no recorded channel (an old log line) was a tap."""
+    since = summary.today - timedelta(days=days - 1)
+    answered = [d for day in summary.days if day.day >= since for d in day.doses if d.state in (ON_TIME, LATE)]
+    voice = sum(d.via == "voice" for d in answered)
+    return {"voice": voice, "tap": len(answered) - voice}
+
+
 # --------------------------------------------------------------------------------
 # What Pam says to the patient. Encouraging, honest, never blaming.
 # --------------------------------------------------------------------------------
@@ -209,7 +218,7 @@ def public(summary: Summary, days: int = 14) -> dict:
     rate = on_time_rate(summary)
     return {
         "streak": summary.streak, "best": summary.best, "today_complete": summary.today_complete,
-        "on_time_rate_7d": None if rate is None else round(rate, 3),
+        "on_time_rate_7d": None if rate is None else round(rate, 3), "answers_7d": answers_by(summary),
         "days": [{"date": day.day.isoformat(), "state": day.state,
                   "doses": [{"name": d.name, "due": datetime.fromtimestamp(d.due_ts).strftime("%H:%M"), "state": d.state,
                              "tapped_at": None if d.confirmed_ts is None else datetime.fromtimestamp(d.confirmed_ts).strftime("%H:%M"),

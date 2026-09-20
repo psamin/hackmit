@@ -53,6 +53,16 @@
   .ack input { width: 22px; height: 22px; margin-top: 3px; flex: none; }
   .changes li { white-space: pre-wrap; }
   details { margin-top: 12px; } summary { cursor: pointer; font-weight: 600; }
+  .days { display: grid; gap: 10px; margin-top: 12px; }
+  .day { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
+  .day-head { display: flex; flex-wrap: wrap; gap: 6px 12px; justify-content: space-between; align-items: baseline; }
+  .day-head strong { font-size: 1rem; }
+  .dose { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 6px 0 0; font-size: .95rem; }
+  .dose .what { flex: 1 1 200px; }
+  .badge { display: inline-block; border-radius: 999px; padding: 1px 10px; font-size: .82rem; font-weight: 600; border: 1px solid currentColor; white-space: nowrap; }
+  .b-good { color: var(--ok); } .b-late, .b-wait { color: var(--off); } .b-none { color: var(--err); }
+  .adh-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 12px 0 0; }
+  select { font: inherit; padding: 8px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); min-height: 44px; }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -136,8 +146,24 @@
       </div>
     </section>
 
-    <section class="card" style="border-style:dashed"><h2>Adherence</h2>
-      <p class="sub">Coming soon: today's doses, confirmations, and the streak.</p></section>
+    <section class="card" id="adherence-card">
+      <h2>Adherence</h2>
+      <p class="sub">What Pam has on record: the answers the patient gave, by saying it to Pam or tapping the card.
+        Pam can't see whether a pill was swallowed, so this shows answers, not what was taken.</p>
+      <div class="grid" id="adh-tiles" aria-live="polite"></div>
+      <div class="adh-controls">
+        <label for="adh-days" class="sub" style="font-weight:400;margin:0">Show</label>
+        <select id="adh-days">
+          <option value="7">the last 7 days</option>
+          <option value="14" selected>the last 14 days</option>
+          <option value="30">the last 30 days</option>
+        </select>
+        <button id="adh-refresh" class="quiet" type="button">Refresh</button>
+        <span id="adh-updated" class="sub" role="status" aria-live="polite"></span>
+      </div>
+      <p id="adh-error" class="error" role="alert"></p>
+      <div id="adh-days-list" class="days"></div>
+    </section>
     <section class="card" style="border-style:dashed"><h2>Trends</h2>
       <p class="sub">Coming later: how things change over weeks. These are signals to talk through with the doctor, not a diagnosis.</p></section>
   </div>
@@ -171,7 +197,7 @@ async function route() {
   if (!me.ok || !me.body.enabled) return show("off");
   if (!me.body.authenticated) { show("login"); $("pin").focus(); return; }
   show("app");
-  await Promise.all([loadStatus(), loadCurrent()]);
+  await Promise.all([loadStatus(), loadCurrent(), loadAdherence()]);
 }
 
 async function loadStatus() {
@@ -192,8 +218,67 @@ async function loadStatus() {
     tile("Medication check", r.body.medication_check ? "On" : "Off", r.body.medication_check ? "on" : "off"),
     tile("Scheduled reminders", reminderText, reminderClass),
     tile("Demo timings", r.body.demo_timings ? "Fast (demo)" : "Normal", r.body.demo_timings ? "off" : "on"),
+    tile("Spoken answers", b.voice_confirm ? "On" : "Off", b.voice_confirm ? "on" : "off"),
+    tile("Streak shown to the patient", b.streak_shown ? "Yes" : "No", b.streak_shown ? "on" : "off"),
     tile("Search index", r.body.elasticsearch ? "Connected" : "Not set up", r.body.elasticsearch ? "on" : "off"));
 }
+
+// ---- adherence: what is on record ---------------------------------------------------------------
+// The words are chosen to say only what is known. A dose is "marked" when the patient said or tapped that they
+// took it; "No answer recorded" is not "missed": Pam does not know whether it was taken.
+const DOSE_TEXT = {
+  on_time: ["Marked on time", "b-good"], late: ["Marked late", "b-late"],
+  pending: ["Waiting for an answer", "b-wait"], unconfirmed: ["No answer recorded", "b-none"],
+};
+const DAY_TEXT = {
+  complete: ["All marked on time", "b-good"], late: ["Marked, some late", "b-late"],
+  pending: ["In progress", "b-wait"], broken: ["A dose has no answer recorded", "b-none"],
+};
+const VIA_TEXT = { voice: "said to Pam", tap: "tapped on the card" };
+
+function clock12(hhmm) {                              // "18:05" -> "6:05 PM", with no time zone maths
+  const [h, m] = hhmm.split(":").map(Number);
+  return `${((h + 11) % 12) + 1}:${String(m).padStart(2, "0")} ${h < 12 ? "AM" : "PM"}`;
+}
+function dayLabel(iso) {                              // "2026-09-21" -> "Mon, Sep 21", from the parts, not a Date in the browser's zone
+  const [y, mo, d] = iso.split("-").map(Number);
+  return new Date(y, mo - 1, d).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+}
+const badge = (pair) => el("span", pair[0], "badge " + pair[1]);
+
+function renderAdherence(a) {
+  const tile = (label, value) => el("div", null, "tile", [el("div", label, "label"), el("div", value, "value")]);
+  const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
+  const voice = a.answers_7d.voice, tap = a.answers_7d.tap;
+  fill($("adh-tiles"),
+    tile("Streak", plural(a.streak, "day") + " in a row"),
+    tile("Best streak", plural(a.best, "day")),
+    tile("Marked on time, last 7 days", a.on_time_rate_7d == null ? "Nothing to show yet" : `${Math.round(a.on_time_rate_7d * 100)}% of doses`),
+    tile("How they answered, last 7 days", voice + tap === 0 ? "No answers yet" : `${voice} said to Pam, ${tap} tapped`));
+  if (!a.days.length) {
+    return fill($("adh-days-list"), el("div", "Nothing on record yet. Once a schedule is saved and a dose comes due, it shows up here.", "box ask"));
+  }
+  fill($("adh-days-list"), ...a.days.slice().reverse().map((day) => el("div", null, "day", [
+    el("div", null, "day-head", [el("strong", dayLabel(day.date)), badge(DAY_TEXT[day.state] || [day.state, "b-wait"])]),
+    ...day.doses.map((d) => el("div", null, "dose", [
+      el("span", `${d.name}, due ${clock12(d.due)}`, "what"),
+      badge(DOSE_TEXT[d.state] || [d.state, "b-wait"]),
+      el("span", d.tapped_at ? `at ${clock12(d.tapped_at)}${d.via ? ", " + (VIA_TEXT[d.via] || d.via) : ""}` : "", "sub"),
+    ])),
+  ])));
+}
+
+async function loadAdherence() {
+  const r = await api(`/api/caregiver/adherence?days=${encodeURIComponent($("adh-days").value)}`);
+  if (r.status === 401) return route();
+  $("adh-error").textContent = "";
+  if (!r.ok) { $("adh-error").textContent = "Couldn't load the adherence record."; return; }
+  renderAdherence(r.body);
+  $("adh-updated").textContent = `Updated ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+}
+$("adh-days").addEventListener("change", loadAdherence);
+$("adh-refresh").addEventListener("click", loadAdherence);
+setInterval(() => { if (!$("app").hidden && !document.hidden) loadAdherence(); }, 30000);
 
 // ---- the saved schedule -------------------------------------------------------------------------
 async function loadCurrent() {
