@@ -29,6 +29,8 @@ from fastapi.responses import (FileResponse, JSONResponse, PlainTextResponse,
                                StreamingResponse)
 from fastapi.staticfiles import StaticFiles
 
+import doses  # medication check; PAM_DOSE_CHECK=off disables it (see doses.py)
+
 ROOT = Path(__file__).resolve().parents[1]
 HERE = ROOT / "server"
 PHONE = ROOT / "phone"
@@ -83,6 +85,7 @@ AGENT_ROUTES = {
     "/api/photo-info": "show_photo", "/api/message": "send_message",
     "/api/call": "call_caregiver", "/api/ride": "request_ride",
     "/api/flights": "search_flights", "/api/fetch": "fetch_object",
+    "/api/time-and-place": "get_time_and_place", "/api/pill-status": "check_pills_taken",
 }
 QUIET = {"/api/push", "/api/dg-token", "/api/agent-config", "/api/health"}
 
@@ -163,6 +166,8 @@ Actions:
   the one in the other room. You cannot tell whether that means two bottles or one that
   was moved, so say where you have seen it, not how many there are.
 """
+if doses.env_enabled():
+    SYSTEM_PROMPT += doses.PROMPT_RULE
 
 
 def fn(name, description, params=None, defer=False):
@@ -202,6 +207,8 @@ FUNCTIONS = [
     fn("fetch_object", "Send the robot arm to fetch an item it knows where to find",
        {"type": "object", "properties": {"item": _str("the item")}, "required": ["item"]}, defer=True),
 ]
+if doses.env_enabled():  # with PAM_DOSE_CHECK=off Pam is never told this function exists
+    FUNCTIONS.append(fn("check_pills_taken", doses.FUNCTION_DESCRIPTION))
 
 
 @app.get("/api/agent-config")
@@ -300,6 +307,13 @@ async def push_send(body: dict):
     for q in list(_subscribers):
         q.put_nowait(body)
     return {"delivered": len(_subscribers)}
+
+
+def _broadcast(msg: dict) -> int:
+    """Push to every connected phone page; returns how many there were."""
+    for q in list(_subscribers):
+        q.put_nowait(msg)
+    return len(_subscribers)
 
 
 # --------------------------------------------------------------------------
@@ -604,6 +618,23 @@ async def time_and_place_endpoint():
     return await time_and_place(_last_fix, time.time() - at if at else None)
 
 
+@app.get("/api/pill-status")
+async def pill_status():
+    """"Did I take my pills?" Answers from a person's tap only; see server/doses.py."""
+    return doses.status_response()
+
+
+@app.post("/api/dose/confirm")
+async def dose_confirm(body: dict):
+    return doses.confirm(body.get("dose"), str(body.get("answer", "")))
+
+
+@app.post("/api/dose/simulate-evidence")
+async def dose_simulate_evidence():
+    """Demo only (PAM_DOSE_DEMO=1): stands in for the camera seeing the bottle move."""
+    return doses.simulate_evidence()
+
+
 # --------------------------------------------------------------------------
 # Contacts: call, text, caregiver. Twilio = silent send / inbound bridge; without
 # it the page shows a confirm card over a tel:/sms: link — the tap is the consent.
@@ -880,6 +911,15 @@ async def reminder_loop():
             REMINDERS.write_text("".join(json.dumps(r) + "\n" for r in _read_reminders()))
 
 
+def _reminders_with_fired():
+    """The reminders, with `fired` true for any that reminder_loop has fired this run.
+
+    reminder_loop remembers what it fired in `_fired` but the flag it writes back to the file
+    is lost (it saves a freshly re-read copy, not the one it changed), so the file alone never
+    says a reminder fired. doses.watch needs to know, so it reads them through here."""
+    return [{**r, "fired": bool(r.get("fired")) or r.get("id") in _fired} for r in _read_reminders()]
+
+
 @app.get("/api/health")
 async def health():
     return {"ok": True, "contacts": len(CONTACTS["contacts"]),
@@ -918,6 +958,8 @@ def main():
                                           ssl_certfile=str(CERT), ssl_keyfile=str(KEY), loop="none"))
     http = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=8000, loop="none"))
     loop.create_task(reminder_loop())
+    if doses.env_enabled():
+        loop.create_task(doses.watch(_reminders_with_fired, MEMORY_JSONL, _broadcast))
     import socket
     ip = socket.gethostbyname(socket.gethostname())
     print(f"\n  Phone:  https://{ip}:8443/        (Pam — voice agent)")
