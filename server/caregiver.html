@@ -8,11 +8,13 @@
   :root {
     --bg: #f6f7fb; --card: #ffffff; --ink: #1c2233; --sub: #5a6478; --line: #dde1ec;
     --accent: #2f5fd0; --on-accent: #ffffff; --ok: #17794a; --off: #8a5a00; --err: #b3261e;
+    --warn-bg: #fff6e0; --err-bg: #fdecea; --ok-bg: #e7f6ee; --ask-bg: #eaf0ff;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #10131c; --card: #181c28; --ink: #eef0f7; --sub: #a3abbf; --line: #2b3145;
       --accent: #8fb0ff; --on-accent: #0b1020; --ok: #62d49a; --off: #f0b85a; --err: #ff8a80;
+      --warn-bg: #2a2412; --err-bg: #2c1817; --ok-bg: #12261c; --ask-bg: #172038;
     }
   }
   * { box-sizing: border-box; }
@@ -20,7 +22,8 @@
   main { max-width: 880px; margin: 0 auto; padding: 24px 16px 64px; }
   header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 20px; }
   h1 { font-size: 1.5rem; margin: 0; }
-  h2 { font-size: 1.05rem; margin: 0 0 4px; }
+  h2 { font-size: 1.15rem; margin: 0 0 4px; }
+  h3 { font-size: 1rem; margin: 18px 0 6px; }
   p { margin: 0 0 12px; }
   .sub { color: var(--sub); font-size: .92rem; }
   .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 20px; margin-bottom: 16px; }
@@ -30,14 +33,26 @@
   .tile .value { font-size: 1.15rem; font-weight: 600; }
   .on { color: var(--ok); } .off { color: var(--off); }
   label { display: block; font-weight: 600; margin-bottom: 6px; }
-  input { width: 100%; font: inherit; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
-  input:focus-visible, button:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  input, textarea { width: 100%; font: inherit; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+  textarea { min-height: 150px; resize: vertical; line-height: 1.45; }
+  input:focus-visible, textarea:focus-visible, button:focus-visible, summary:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
   button { font: inherit; font-weight: 600; padding: 12px 20px; border-radius: 999px; border: 0; cursor: pointer; background: var(--accent); color: var(--on-accent); min-height: 48px; }
   button.quiet { background: transparent; color: var(--accent); border: 1px solid var(--line); }
-  button:disabled { opacity: .55; cursor: not-allowed; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 12px; }
   .error { color: var(--err); min-height: 1.5em; margin-top: 10px; }
-  .soon { border-style: dashed; }
   code { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px; font-size: .9em; }
+  ul.plain { list-style: none; padding: 0; margin: 0; }
+  ul.plain li { padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; margin-bottom: 8px; }
+  .quote { display: block; color: var(--sub); font-size: .85rem; margin-top: 4px; white-space: pre-wrap; }
+  .box { border-radius: 12px; padding: 12px 14px; margin: 12px 0; }
+  .box.ask { background: var(--ask-bg); } .box.warn { background: var(--warn-bg); }
+  .box.bad { background: var(--err-bg); } .box.good { background: var(--ok-bg); }
+  .box ul { margin: 6px 0 0; padding-left: 20px; }
+  .ack { display: flex; gap: 10px; align-items: flex-start; font-weight: 400; margin: 8px 0; }
+  .ack input { width: 22px; height: 22px; margin-top: 3px; flex: none; }
+  .changes li { white-space: pre-wrap; }
+  details { margin-top: 12px; } summary { cursor: pointer; font-weight: 600; }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -78,18 +93,70 @@
       <div class="grid" id="tiles" aria-live="polite"></div>
     </section>
 
-    <section class="card soon"><h2>Medication schedule</h2>
-      <p class="sub">Coming next: write the instructions in plain words, check what Pam understood, then save.</p></section>
-    <section class="card soon"><h2>Adherence</h2>
+    <section class="card" id="schedule-card">
+      <h2>Medication schedule</h2>
+      <p class="sub">Write the instructions in your own words. Pam reads them and shows you what she understood.
+        Nothing is saved until you check it and press Save.</p>
+
+      <div id="current"></div>
+
+      <h3>Instructions</h3>
+      <label for="instructions" class="sub" style="font-weight:400">Describe every medication, with the times if you know them.
+        For example: “Metformin 500mg at 8am and 6pm with food. Ibuprofen only when needed, no more than 3 a day.”</label>
+      <textarea id="instructions" maxlength="4000" spellcheck="true"></textarea>
+      <p class="sub" style="margin-top:8px">Your words are sent to an AI service to be read. For a demo, use made-up patients and medications.</p>
+      <div class="row">
+        <button id="read-btn" type="button">Read my instructions</button>
+        <span id="read-status" class="sub" role="status" aria-live="polite"></span>
+      </div>
+      <p id="read-error" class="error" role="alert"></p>
+
+      <div id="review" hidden>
+        <h3>What Pam understood</h3>
+        <ul id="understood" class="plain"></ul>
+
+        <div id="untracked-box" class="box warn" hidden></div>
+        <div id="questions-box" class="box ask" hidden></div>
+        <div id="unsupported-box" class="box warn" hidden></div>
+        <div id="errors-box" class="box bad" hidden></div>
+        <div id="warnings-box" class="box warn" hidden></div>
+
+        <div id="changes-box" hidden>
+          <h3>What would change</h3>
+          <ul id="changes" class="plain changes"></ul>
+        </div>
+
+        <p class="sub" style="margin-top:14px">Please check this against the prescription or the doctor's instructions.
+          Pam only sends reminders; she can't tell whether a schedule is medically right.</p>
+        <div class="row">
+          <button id="save-btn" type="button" disabled>Save this schedule</button>
+          <button id="discard-btn" class="quiet" type="button">Start over</button>
+          <span id="save-status" class="sub" role="status" aria-live="polite"></span>
+        </div>
+      </div>
+    </section>
+
+    <section class="card" style="border-style:dashed"><h2>Adherence</h2>
       <p class="sub">Coming soon: today's doses, confirmations, and the streak.</p></section>
-    <section class="card soon"><h2>Trends</h2>
+    <section class="card" style="border-style:dashed"><h2>Trends</h2>
       <p class="sub">Coming later: how things change over weeks. These are signals to talk through with the doctor, not a diagnosis.</p></section>
   </div>
 </main>
 
 <script>
+// Everything that came from the server or from the caregiver goes onto the page with textContent, never as
+// HTML: a note like "<img onerror=...>" must show up as those characters and do nothing.
 const $ = (id) => document.getElementById(id);
 const show = (which) => { for (const id of ["loading", "off", "login", "app"]) $(id).hidden = id !== which; };
+
+function el(tag, text, className, children = []) {
+  const node = document.createElement(tag);
+  if (text != null) node.textContent = text;
+  if (className) node.className = className;
+  for (const child of children) node.append(child);
+  return node;
+}
+const fill = (parent, ...nodes) => parent.replaceChildren(...nodes);
 
 async function api(path, options) {
   const res = await fetch(path, { credentials: "same-origin", ...options });
@@ -97,35 +164,146 @@ async function api(path, options) {
   try { body = await res.json(); } catch { /* an empty body is fine */ }
   return { status: res.status, ok: res.ok, body };
 }
+const post = (path, data) => api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
 
 async function route() {
   const me = await api("/api/caregiver/me");
   if (!me.ok || !me.body.enabled) return show("off");
   if (!me.body.authenticated) { show("login"); $("pin").focus(); return; }
   show("app");
-  await loadStatus();
+  await Promise.all([loadStatus(), loadCurrent()]);
 }
 
 async function loadStatus() {
   const r = await api("/api/caregiver/status");
-  if (r.status === 401) return route();            // the session ended
-  const on = (yes) => `<span class="${yes ? "on" : "off"}">${yes ? "On" : "Off"}</span>`;
-  const tile = (label, value) => `<div class="tile"><div class="label">${label}</div><div class="value">${value}</div></div>`;
-  $("tiles").innerHTML = [
-    tile("Medication check", on(r.body.medication_check)),
-    tile("Demo timings", r.body.demo_timings ? '<span class="off">Fast (demo)</span>' : '<span class="on">Normal</span>'),
-    tile("Search index", r.body.elasticsearch ? '<span class="on">Connected</span>' : '<span class="off">Not set up</span>'),
-  ].join("");
+  if (r.status === 401) return route();             // the session ended
+  const tile = (label, value, cls) => el("div", null, "tile", [el("div", label, "label"), el("div", value, "value " + cls)]);
+  const b = r.body;
+  // Scheduled reminders: say plainly when they are NOT being sent, and why. A damaged schedule file must
+  // never look like "all fine".
+  const [reminderText, reminderClass] =
+    !b.schedule_reminders ? ["Off", "off"]
+    : !b.scheduler_running ? ["Not running", "off"]
+    : b.schedule === "active" ? [`On (schedule version ${b.schedule_version})`, "on"]
+    : b.schedule === "none" ? ["No schedule saved yet", "off"]
+    : b.schedule === "damaged" ? ["Schedule file damaged: no reminders are being sent", "off"]
+    : ["Problem reading the schedule", "off"];
+  fill($("tiles"),
+    tile("Medication check", r.body.medication_check ? "On" : "Off", r.body.medication_check ? "on" : "off"),
+    tile("Scheduled reminders", reminderText, reminderClass),
+    tile("Demo timings", r.body.demo_timings ? "Fast (demo)" : "Normal", r.body.demo_timings ? "off" : "on"),
+    tile("Search index", r.body.elasticsearch ? "Connected" : "Not set up", r.body.elasticsearch ? "on" : "off"));
 }
 
+// ---- the saved schedule -------------------------------------------------------------------------
+async function loadCurrent() {
+  const r = await api("/api/caregiver/schedule");
+  if (r.status === 401) return route();
+  const box = $("current");
+  if (!r.ok) return fill(box, el("p", r.body.error || "Couldn't load the saved schedule.", "error"));
+  if (!r.body.exists) {
+    fill(box, el("div", "No schedule has been saved yet.", "box ask"));
+    return;
+  }
+  const s = r.body;
+  const history = el("details", null, null, [el("summary", "Recent changes"),
+    el("ul", null, "plain", s.history.map((h) => el("li", `Version ${h.version}, ${h.ts.replace("T", " ")} (${h.action}): ` +
+      (h.changes.length ? h.changes.join("  |  ") : "no changes")))) ]);
+  fill(box,
+    el("h3", `Saved schedule (version ${s.version}, ${s.saved_at.replace("T", " ")})`),
+    el("ul", null, "plain", s.lines.length ? s.lines.map((line) => el("li", line)) : [el("li", "No medications.")]),
+    history);
+  if (!$("instructions").value && s.instructions) $("instructions").value = s.instructions;
+}
+
+// ---- reading instructions into a draft ----------------------------------------------------------
+let draft = null;
+
+function resetReview(message) {
+  draft = null;
+  $("review").hidden = true;
+  $("save-btn").disabled = true;
+  $("save-status").textContent = message || "";
+}
+
+function section(box, title, items, makeItem) {
+  box.hidden = !items.length;
+  if (!items.length) return;
+  fill(box, el("strong", title), el("ul", null, null, items.map(makeItem)));
+}
+
+function renderReview(d) {
+  draft = d;
+  $("review").hidden = false;
+  fill($("understood"), ...(d.understood.length
+    ? d.understood.map((u) => el("li", u.line, null, u.quote ? [el("span", `From your words: “${u.quote}”`, "quote")] : []))
+    : [el("li", "Nothing could be read into a schedule yet.")]));
+
+  section($("untracked-box"), "No reminders will be set for these medications, because part of what you wrote can't be tracked:",
+    d.untracked, (name) => el("li", name));
+  section($("questions-box"), "Pam needs answers before she can save this. Add the answers to your instructions above, then read them again:",
+    d.questions, (q) => el("li", (q.medication ? q.medication + ": " : "") + q.question + (q.suggestion ? `  (for example: ${q.suggestion})` : "")));
+  section($("errors-box"), "Please fix:", d.errors, (e) => el("li", e));
+  section($("warnings-box"), "Worth a second look:", d.warnings, (w) => el("li", w));
+
+  const box = $("unsupported-box");
+  box.hidden = !d.unsupported.length;
+  if (d.unsupported.length) {
+    fill(box, el("strong", "Pam can't track these. Tick each one to confirm you understand:"),
+      ...d.unsupported.map((u) => {
+        const check = el("input"); check.type = "checkbox"; check.dataset.phrase = u.phrase;
+        check.addEventListener("change", updateSave);
+        return el("label", null, "ack", [check, el("span", `“${u.phrase}” — ${u.reason}`)]);
+      }));
+  }
+  $("changes-box").hidden = !d.changes.length;
+  fill($("changes"), ...d.changes.map((c) => el("li", c)));
+  $("save-status").textContent = "";
+  updateSave();
+}
+
+function updateSave() {
+  const ticks = [...document.querySelectorAll("#unsupported-box input[type=checkbox]")];
+  $("save-btn").disabled = !(draft && draft.can_save && ticks.every((t) => t.checked));
+}
+
+$("read-btn").addEventListener("click", async () => {
+  $("read-error").textContent = "";
+  resetReview();
+  const text = $("instructions").value.trim();
+  if (!text) { $("read-error").textContent = "Please type the instructions first."; return; }
+  $("read-btn").disabled = true;
+  $("read-status").textContent = "Reading…";
+  const r = await post("/api/caregiver/schedule/parse", { text });
+  $("read-btn").disabled = false;
+  $("read-status").textContent = "";
+  if (r.status === 401) return route();
+  if (!r.ok) { $("read-error").textContent = r.body.error || "Something went wrong. Please try again."; return; }
+  renderReview(r.body);
+});
+
+// Editing the words after a reading makes that reading out of date: it must be read again before saving.
+$("instructions").addEventListener("input", () => { if (draft) resetReview("You changed the instructions. Please read them again."); });
+
+$("discard-btn").addEventListener("click", () => resetReview());
+
+$("save-btn").addEventListener("click", async () => {
+  if (!draft) return;
+  $("save-btn").disabled = true;
+  const acknowledged = [...document.querySelectorAll("#unsupported-box input:checked")].map((t) => t.dataset.phrase);
+  const r = await post("/api/caregiver/schedule/save", { draft_id: draft.draft_id, acknowledged });
+  if (r.status === 401) return route();
+  if (!r.ok) { $("save-status").textContent = r.body.error || "Couldn't save."; updateSave(); return; }
+  resetReview(`Saved as version ${r.body.version}.`);
+  await loadCurrent();
+});
+
+// ---- signing in and out -------------------------------------------------------------------------
 $("login-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   $("login-error").textContent = "";
   $("login-button").disabled = true;
-  const r = await api("/api/caregiver/login", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ pin: $("pin").value }),
-  });
+  const r = await post("/api/caregiver/login", { pin: $("pin").value });
   $("login-button").disabled = false;
   $("pin").value = "";                              // do not leave the PIN sitting in the field
   if (r.ok) return route();
@@ -135,7 +313,7 @@ $("login-form").addEventListener("submit", async (event) => {
   $("pin").focus();
 });
 
-$("logout").addEventListener("click", async () => { await api("/api/caregiver/logout", { method: "POST" }); route(); });
+$("logout").addEventListener("click", async () => { await api("/api/caregiver/logout", { method: "POST" }); resetReview(); route(); });
 
 route();
 </script>

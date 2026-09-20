@@ -267,7 +267,7 @@ const CAPABILITIES = [
   ["save_face", "Remember a person", "Store the face the camera can see under a name. Nothing is kept until you give one.", "This is my son Jacob."],
   ["request_ride", "Prepare a ride", "Open a ride to a saved destination. You confirm the booking in Uber.", "Help me get a ride to the airport."],
   ["show_photo", "See a familiar face", "Show family photos that your helper has added to Pam.", "Show me a photo of Sarah."],
-  ["search_flights", "Look for a flight", "Hear available flight options when a flight service is connected. Pam does not buy tickets.", "Find flights to New York."],
+  ["search_flights", "Look for a flight", "Hear Google Flights options read aloud when the flight service is connected. Pam does not buy tickets.", "Find flights to New York."],
   ["fetch_object", "Retrieve an item", "Ask a connected robot for help. This needs the robot service and setup.", "Can the robot bring my medicine?"],
   ["guide_me", "Take it step by step", "Talk through an everyday task one step at a time, at your pace.", "Help me make a cup of tea."]
 ];
@@ -923,7 +923,12 @@ $("mic-toggle").onclick = () => {
 const api = async (url, opts) => {
   const r = await fetch(url, opts);
   const j = await r.json().catch(() => ({}));
-  return r.ok ? j : { say: j.say || `Sorry, that didn't work. (${j.error || r.status})` };
+  if (r.ok) return j;
+  // This string is SPOKEN. "Sorry, that didn't work. 500" means nothing to someone
+  // asking where their medication is, and sounds broken. The status code and error go
+  // to the laptop terminal, where the person who can act on them is looking.
+  post_log("api", `${url} -> HTTP ${r.status} ${j.error || ""}`);
+  return { say: j.say || "Sorry, I couldn't do that just now." };
 };
 
 const handlers = {

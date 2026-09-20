@@ -706,11 +706,28 @@ Model weights are gitignored too and shared out of band.
   offer details in `say`, because only `say` reaches the voice model. Do not put
   essential information solely in a card or tell the user to look at a screen.
   Flights no longer fall back to a Google Flights link when credentials are absent.
-- Flight searches use AMADEUS_ENV=test by default and label cached test offers as
-  non-live examples. Production credentials plus AMADEUS_ENV=production are needed
-  for real-time quotes. Never silently switch to production or buy tickets.
-  One-way/one-adult offers include airports, local dates/times, airline, stops,
-  total price and its actual currency; the voice agent presents one at a time.
+- Flights come from SerpApi's google_flights engine (SERPAPI_KEY, free 250/month).
+  Google itself publishes NO flights API: QPX Express died in 2018 and only the
+  carbon Travel Impact Model remains. Amadeus self-service was decommissioned on
+  2026-07-17 and its hostnames no longer resolve, so that integration was deleted
+  rather than kept as a fallback. Verified against provider docs, 2026-09-21.
+  One-way/one-adult offers include airports, local dates/times, airline, stops and
+  price in FLIGHT_CURRENCY; prices are indicative and Pam never books or pays.
+  Keep api_key in the query string only; never log or return it.
+- `server/setup.py` is the first-run page at `/setup`. app.main calls `setup.start()`
+  1.5 s after boot: it opens `/setup` when the Google client or flight key is missing,
+  the Google consent URL when the client exists but no account is linked, and nothing
+  once both are done. It must never raise or block startup when there is no browser.
+- Setup writes `server/.env` through `schedule.private_append_fd` on a temp file then
+  `replace()`, so the file stays owner-only and is never half-written. Other keys and
+  comments in `.env` survive; a key already present is replaced, not duplicated. Values
+  are also pushed into `os.environ` and `calendar_service.reset()` is called, so nothing
+  needs a restart. Secrets are never echoed, logged or returned; status is booleans only.
+  Flight keys are validated against SerpApi `/account` (free, no search spent) BEFORE
+  being written, and a provider outage returns 503 without discarding the key silently.
+- Reminders are Pam's own: set_reminder appends to server/reminders.jsonl, get_reminders
+  reads it, reminder_loop speaks due ones over SSE. There is no Google/Apple reminder
+  integration, and the calendar integration must never be required for reminders to work.
 - Uber handoff responses explain the limitation through speech and can
   retain optional helper cards. Do not equate prompt-level verbal approval with a
   server-enforced confirmation gate. Restart the voice session after prompt changes.
@@ -725,3 +742,13 @@ Model weights are gitignored too and shared out of band.
 - Native dialog close events can arrive after the user focuses another control.
   Only restore focus when it is on the document body or still inside that dialog;
   unconditional restoration can steal focus from keyboard tab navigation.
+- Windows deployment: os.pread is unavailable. Schedule appends inspect the final
+  byte with lseek/read on their own descriptor while retaining append-only writes.
+  Unix mode bits do not verify Windows privacy: schedule storage creates a protected
+  DACL granting only the current Windows user's SID access, verifies ownership,
+  and re-applies protection before appending to an existing file. Protection failure
+  refuses the write. POSIX retains owner-only mode 0600.
+- Native Windows Get-Acl checks replace only the platform-inapplicable stat-mode
+  assertion, not the privacy requirement. The Windows laptop passed 196 schedule/
+  parser tests, including torn writes, 25 concurrent saves, new/existing-file ACLs,
+  and an injected permission failure proving that no patient data is appended.

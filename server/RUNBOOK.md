@@ -25,24 +25,35 @@ page are both trusted. Mic permission prompt appears once inside "Talk to Pam".
 ## Environment
 
 `server/.env` (see `.env.example`): `DEEPGRAM_API_KEY` is the only required key —
-console.deepgram.com, Member role. Optional: `ELASTICSEARCH_URL`,
-`AMADEUS_*`, `CALENDAR_ICS_URL`, `ARM_URL`, `HOME_LAT/LON`. `perception/.env` needs
+console.deepgram.com, Member role. Optional: `ELASTICSEARCH_URL`, `SERPAPI_KEY`,
+`GOOGLE_CALENDAR_*`, `CAREGIVER_PIN`, `ARM_URL`, `HOME_LAT/LON`. `perception/.env` needs
 `ANTHROPIC_API_KEY` for the VLM.
 
-## Google Calendar sign-in
+## First run: http://127.0.0.1:8000/setup
 
-Calendar access is read-only. A Google Maps API key does not authorize Calendar.
+Start `server/app.py` and it opens this page by itself when anything is still missing. It
+collects the two credentials that must belong to your own accounts, writes them to the
+gitignored `server/.env` (owner-only), applies them to the running process, and sends the
+browser into Google's consent screen. No file editing and no restart.
 
-1. Enable the Google Calendar API in your Google Cloud project.
-2. Configure the Google consent screen and add your account as a test user if the app is in Testing mode.
-3. Create a **Web application** OAuth client with this exact authorized redirect URI:
-   `http://127.0.0.1:8000/api/calendar/google/callback`.
-4. Set `GOOGLE_CALENDAR_CLIENT_ID` and `GOOGLE_CALENDAR_CLIENT_SECRET` in the
-   gitignored `server/.env`. Never paste the secret or a private iCal URL into chat.
-5. Install `server/requirements.txt` in the project venv and restart `server/app.py`.
-6. On the laptop, open `http://127.0.0.1:8000/`, then Features → Check your calendar →
-   Connect Google Calendar. Finish Google's consent flow in the new browser tab.
-7. The phone can now ask for today's schedule from the linked primary calendar.
+**Google Calendar** (read-only; a Google Maps key does *not* authorize Calendar):
+enable the Calendar API, add yourself as a test user on the consent screen, create a
+**Web application** OAuth client with redirect URI
+`http://127.0.0.1:8000/api/calendar/google/callback`, then paste the client ID and secret.
+Approve Google's page once; the stored refresh token keeps it connected across restarts, so
+later startups just print `Setup: Google Calendar connected`.
+
+**Flight search**: paste a free SerpApi key. It is checked against the provider's `/account`
+endpoint before it is saved, so a typo fails on the page instead of mid-conversation.
+
+The setup routes, like the OAuth routes, answer only on the laptop's loopback address: a
+phone on the LAN gets 403. A saved secret is never rendered, returned or logged, and
+`/api/setup/status` answers with booleans only. Pam starts and runs normally while either
+service is unconnected; it says so out loud rather than inventing an answer.
+
+Reminders need none of this. `set_reminder` writes to Pam's own `server/reminders.jsonl`,
+`get_reminders` reads it back, and the scheduler speaks them through SSE. No Google, Apple
+or iPhone reminder account is involved at any point.
 
 Google expands recurring events; the query uses the calendar's own timezone and
 handles all-day events and pagination. Missing access and provider failures are
@@ -58,15 +69,19 @@ Treat the Pam server as a single-user app on a trusted network, not a public ser
 
 ## Voice-first flight information
 
-Pam speaks flight information rather than handing off to a search link. There is
-no Google Flights card fallback. Without `AMADEUS_KEY` and `AMADEUS_SECRET`, Pam
-explains aloud that schedules and fares are unavailable instead of claiming to
-have found flights.
+**Google has no public flights API.** QPX Express, its last developer-facing flight
+feed, was retired in 2018 and never replaced; the only flight API Google publishes
+now returns carbon-emission estimates, not fares. **Amadeus self-service was also
+decommissioned on July 17, 2026** (its API hostnames no longer resolve), so the old
+`AMADEUS_*` integration could never have returned data again and has been removed.
 
-`AMADEUS_ENV=test` is the default and all returned offers are explicitly labelled
-as test data, not live availability. Real-time searches require Amadeus production
-credentials and `AMADEUS_ENV=production`; changing this can incur provider charges.
-Do not enable production access without the account owner's approval.
+Pam now reads Google Flights results through **SerpApi's `google_flights` engine**:
+sign up at serpapi.com, no card, free plan 250 searches/month, and paste the key into
+`/setup` (or set `SERPAPI_KEY` by hand). `FLIGHT_CURRENCY` (default `USD`) sets the
+quoted currency. Without a
+key, Pam says aloud that flight data is unavailable rather than inventing fares or
+handing off a search link. These are Google Flights' own indicative prices; the
+bookable fare is whatever the airline or agent charges at checkout.
 
 Searches are one-way, for one adult, from the saved `home_airport`. The spoken
 function result includes the airline, airports, local departure/arrival dates and

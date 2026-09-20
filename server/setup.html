@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pam — setup</title>
+<style>
+  :root { --bg:#fff; --paper:#f5f7fa; --ink:#1b2938; --slate:#536375; --line:#e3e9f0;
+          --blue:#2367bb; --blue-deep:#19549d; --blue-mist:#edf4fd; --ok:#247249; --err:#a92c2c; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:17px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 32px 20px 72px; }
+  h1 { font-size: 1.7rem; letter-spacing: -.03em; margin: 0 0 6px; }
+  h2 { font-size: 1.15rem; margin: 0; }
+  p { margin: 0 0 12px; }
+  .lead { color: var(--slate); margin-bottom: 28px; }
+  .card { border: 1px solid var(--line); border-radius: 20px; padding: 24px; margin-bottom: 18px; }
+  .head { display:flex; align-items:center; justify-content:space-between; gap:14px; margin-bottom: 10px; }
+  .state { font-size: .82rem; font-weight: 600; padding: 6px 12px; border-radius: 999px; background: var(--paper); color: var(--slate); white-space: nowrap; }
+  .state.on { background: #e7f4ec; color: var(--ok); }
+  ol { margin: 0 0 18px; padding-left: 22px; color: var(--slate); font-size: .95rem; }
+  li { margin-bottom: 6px; }
+  code { background: var(--paper); border: 1px solid var(--line); border-radius: 6px; padding: 2px 7px; font-size: .88em; overflow-wrap: anywhere; }
+  label { display:block; font-weight:600; font-size:.9rem; margin: 14px 0 6px; }
+  input { width:100%; font: inherit; min-height: 52px; padding: 12px 15px; border:1px solid var(--line); border-radius: 12px; background: var(--bg); color: var(--ink); }
+  input:focus-visible, button:focus-visible, a:focus-visible { outline: 3px solid var(--blue); outline-offset: 2px; }
+  button { font: inherit; font-weight: 600; min-height: 52px; padding: 12px 24px; margin-top: 16px;
+           border: 0; border-radius: 999px; background: var(--blue); color: #fff; cursor: pointer; }
+  button:hover { background: var(--blue-deep); }
+  button:disabled { opacity:.55; cursor: default; }
+  a { color: var(--blue-deep); }
+  .note { color: var(--slate); font-size: .85rem; }
+  .msg { margin-top: 12px; font-size: .92rem; min-height: 1.4em; overflow-wrap: anywhere; }
+  .msg.bad { color: var(--err); } .msg.good { color: var(--ok); }
+  .done { background: var(--blue-mist); border-color: #cfe0f6; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Set Pam up</h1>
+  <p class="lead">Two services need a key of your own. Add them here and Pam starts using them straight
+     away — no file editing, no restart. Everything stays on this laptop.</p>
+
+  <section class="card" id="calendar-card">
+    <div class="head"><h2>Google Calendar</h2><span class="state" id="calendar-state">Checking…</span></div>
+    <p class="note">Read-only: Pam reads today's events and never changes your calendar.</p>
+    <ol>
+      <li>In <a href="https://console.cloud.google.com/apis/library/calendar-json.googleapis.com" target="_blank" rel="noopener noreferrer">Google Cloud</a>, enable the Google Calendar API.</li>
+      <li>On the consent screen, add your own Google account as a test user.</li>
+      <li>Create credentials → OAuth client ID → <strong>Web application</strong>, with this redirect URI:<br><code id="redirect">http://127.0.0.1:8000/api/calendar/google/callback</code></li>
+      <li>Paste the client ID and secret below. Google's approval page opens by itself.</li>
+    </ol>
+    <form id="calendar-form">
+      <label for="client-id">Client ID</label>
+      <input id="client-id" name="client_id" autocomplete="off" spellcheck="false" placeholder="1234-abcd.apps.googleusercontent.com">
+      <label for="client-secret">Client secret</label>
+      <input id="client-secret" name="client_secret" type="password" autocomplete="off" spellcheck="false">
+      <button type="submit" id="calendar-submit">Save and approve with Google</button>
+      <p class="msg" id="calendar-msg" role="status"></p>
+    </form>
+  </section>
+
+  <section class="card" id="flights-card">
+    <div class="head"><h2>Flight search</h2><span class="state" id="flights-state">Checking…</span></div>
+    <p class="note">Google publishes no flights API of its own, so Pam reads Google Flights results
+       through SerpApi. The free plan allows 250 searches a month and needs no card. Pam never books
+       or pays for anything.</p>
+    <ol>
+      <li>Create a free account at <a href="https://serpapi.com/users/sign_up" target="_blank" rel="noopener noreferrer">serpapi.com</a>.</li>
+      <li>Copy your private API key from the dashboard and paste it below.</li>
+    </ol>
+    <form id="flights-form">
+      <label for="flight-key">SerpApi key</label>
+      <input id="flight-key" name="api_key" type="password" autocomplete="off" spellcheck="false">
+      <button type="submit" id="flights-submit">Check and save the key</button>
+      <p class="msg" id="flights-msg" role="status"></p>
+    </form>
+  </section>
+
+  <p class="note">Keys are written to <code>server/.env</code>, which is gitignored and readable only by
+     your Windows account. Pam never shows a saved key again, and never sends one to the phone.</p>
+</main>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+
+function say(id, text, kind) {
+  const line = $(id);
+  line.textContent = text;
+  line.className = "msg" + (kind ? " " + kind : "");
+}
+
+async function refresh() {
+  try {
+    const state = await (await fetch("/api/setup/status")).json();
+    $("redirect").textContent = state.redirect_uri;
+    const calendar = state.calendar.connected ? "Connected" : state.calendar.configured ? "Waiting for your approval" : "Not set up";
+    $("calendar-state").textContent = calendar;
+    $("calendar-state").className = "state" + (state.calendar.connected ? " on" : "");
+    $("calendar-card").classList.toggle("done", state.calendar.connected);
+    $("flights-state").textContent = state.flights.configured ? "Connected" : "Not set up";
+    $("flights-state").className = "state" + (state.flights.configured ? " on" : "");
+    $("flights-card").classList.toggle("done", state.flights.configured);
+    return state;
+  } catch { say("calendar-msg", "Pam's server is not answering. Is it still running?", "bad"); }
+}
+
+function submitter(formId, buttonId, messageId, url, done) {
+  $(formId).onsubmit = async (event) => {
+    event.preventDefault();
+    const button = $(buttonId), fields = Object.fromEntries(new FormData(event.target));
+    button.disabled = true;
+    say(messageId, "Checking…");
+    try {
+      const response = await fetch(url, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(fields)});
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) { say(messageId, body.error || "That didn't work. Please try again.", "bad"); return; }
+      event.target.reset();
+      await refresh();
+      done(body, messageId);
+    } catch { say(messageId, "Pam's server is not answering. Is it still running?", "bad"); }
+    finally { button.disabled = false; }
+  };
+}
+
+submitter("calendar-form", "calendar-submit", "calendar-msg", "/api/setup/google", (body, messageId) => {
+  say(messageId, "Saved. Opening Google's approval page…", "good");
+  location.href = body.connect_path;
+});
+submitter("flights-form", "flights-submit", "flights-msg", "/api/setup/flights", (body, messageId) => {
+  say(messageId, "The flight service accepted that key. Pam can look up flights now.", "good");
+});
+
+refresh();
+if (new URLSearchParams(location.search).get("calendar") === "connected")
+  say("calendar-msg", "Google Calendar is connected. Pam can read today's schedule.", "good");
+</script>
+</body>
+</html>

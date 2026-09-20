@@ -115,6 +115,11 @@ class CalendarService:
         except (OSError, ValueError, KeyError):
             self.credentials = None
 
+    def reset(self):
+        """Re-read the client from the environment: setup.py can change it without a restart."""
+        self.loaded, self.credentials = False, None
+        self.pending.clear()
+
     def status(self):
         self.load()
         return {"configured": self.configured(), "connected": bool(self.configured() and self.credentials),

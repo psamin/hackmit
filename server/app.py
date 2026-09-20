@@ -31,6 +31,8 @@ from fastapi.staticfiles import StaticFiles
 
 import doses  # medication check; PAM_DOSE_CHECK=off disables it (see doses.py)
 import caregiver  # caregiver dashboard behind a shared PIN; off until CAREGIVER_PIN is set (see caregiver.py)
+import caregiver_schedule  # the dashboard's medication-schedule routes (all behind the PIN)
+import setup  # laptop-only first-run page: Google Calendar client + flight key (see setup.py)
 
 ROOT = Path(__file__).resolve().parents[1]
 HERE = ROOT / "server"
@@ -71,6 +73,8 @@ import google_calendar
 google_calendar.install_log_filter()
 app = FastAPI(title="Pam")
 app.include_router(caregiver.router)
+app.include_router(caregiver_schedule.router)
+app.include_router(setup.router)
 
 
 # --------------------------------------------------------------------------
@@ -746,7 +750,7 @@ async def google_calendar_callback(request: Request):
         await google_calendar.calendar_service.finish(request.query_params.get("state", ""),
             request.cookies.get(google_calendar.COOKIE, ""), request.query_params.get("code", ""),
             denied=bool(request.query_params.get("error")))
-        response = RedirectResponse("/?calendar=connected", status_code=303)
+        response = RedirectResponse("/setup?calendar=connected", status_code=303)
     except google_calendar.CalendarError as exc:
         response = PlainTextResponse(str(exc), 400)
     response.delete_cookie(google_calendar.COOKIE, path="/api/calendar/google")
@@ -814,7 +818,7 @@ async def pill_status():
 
 @app.post("/api/dose/confirm")
 async def dose_confirm(body: dict):
-    return doses.confirm(body.get("dose"), str(body.get("answer", "")))
+    return doses.confirm(body.get("dose"), str(body.get("answer", "")), group=body.get("group"))
 
 
 @app.post("/api/dose/simulate-evidence")
@@ -870,8 +874,10 @@ async def photo_info(name: str):
 
 
 # --------------------------------------------------------------------------
-# Flights: Amadeus test API when keys exist, else straight to a prefilled
-# Google Flights link — either way the page shows a card.
+# Flights: Google Flights data through SerpApi's google_flights engine, which has a
+# free monthly quota. Google retired its own public flight API (QPX Express) in 2018
+# and Amadeus decommissioned its self-service portal in July 2026, so neither is an
+# option. Every offer is spoken; Pam never books, holds or pays for anything.
 # --------------------------------------------------------------------------
 IATA = {"new york": "JFK", "boston": "BOS", "san francisco": "SFO", "los angeles": "LAX",
         "chicago": "ORD", "miami": "MIA", "london": "LHR", "paris": "CDG", "seattle": "SEA",
@@ -883,33 +889,29 @@ def flight_airport_label(code):
     return f"{city.title()} ({code})" if city else code
 
 
-def spoken_flight_offer(offer, carriers):
-    itineraries = offer["itineraries"]
-    if len(itineraries) != 1:
-        raise ValueError("Expected a one-way itinerary")
-    segments = itineraries[0]["segments"]
-    departure, arrival = segments[0]["departure"], segments[-1]["arrival"]
-    if "T" not in departure["at"] or "T" not in arrival["at"]:
-        raise ValueError("Flight times are missing")
-    departure_time = datetime.fromisoformat(departure["at"].replace("Z", "+00:00"))
-    arrival_time = datetime.fromisoformat(arrival["at"].replace("Z", "+00:00"))
-    price = Decimal(str(offer["price"]["total"]))
-    currency = str(offer["price"]["currency"]).upper()
+def spoken_flight_offer(offer, currency):
+    segments = offer["flights"]
+    if not segments:
+        raise ValueError("Flight itinerary is empty")
+    departure, arrival = segments[0]["departure_airport"], segments[-1]["arrival_airport"]
+    departure_time = datetime.strptime(departure["time"], "%Y-%m-%d %H:%M")
+    arrival_time = datetime.strptime(arrival["time"], "%Y-%m-%d %H:%M")
+    price = Decimal(str(offer["price"]))
+    currency = str(currency).upper()
     if not price.is_finite() or price < 0 or not re.fullmatch(r"[A-Z]{3}", currency):
         raise ValueError("Flight price is invalid")
-    stops = len(segments) - 1 + sum(int(segment.get("numberOfStops", 0)) for segment in segments)
-    if stops < 0:
-        raise ValueError("Flight stops are invalid")
-    airline_codes = list(dict.fromkeys(segment["carrierCode"] for segment in segments))
-    airline = " and ".join(carriers.get(code) or f"airline code {code}" for code in airline_codes)
+    stops = len(segments) - 1
+    airline = " and ".join(dict.fromkeys(str(segment["airline"]).strip() for segment in segments))
+    if not airline:
+        raise ValueError("Flight airline is missing")
     currency_name = {"USD": "US dollars", "EUR": "euros", "GBP": "British pounds", "CAD": "Canadian dollars", "AUD": "Australian dollars", "JPY": "Japanese yen"}.get(currency, currency)
     stop_text = "nonstop" if stops == 0 else f"{stops} stop{'s' if stops != 1 else ''}"
     depart = departure_time.strftime("%I:%M %p on %B %d, %Y").lstrip("0")
     arrive = arrival_time.strftime("%I:%M %p on %B %d, %Y").lstrip("0")
-    total = format(price, "f")
-    summary = (f"{airline}, from {flight_airport_label(departure['iataCode'])} to {flight_airport_label(arrival['iataCode'])}, "
-               f"departing {depart} and arriving {arrive}, {stop_text}. The total quoted price for one adult is {total} {currency_name}.")
-    return {"airline": airline, "departure": departure, "arrival": arrival, "stops": stops,
+    total = format(price.normalize(), "f")
+    summary = (f"{airline}, from {flight_airport_label(departure['id'])} to {flight_airport_label(arrival['id'])}, "
+               f"departing {depart} and arriving {arrive}, {stop_text}. The quoted price for one adult is {total} {currency_name}.")
+    return {"airline": airline, "departure": departure["id"], "arrival": arrival["id"], "stops": stops,
             "total_price": total, "currency": currency, "summary": summary}
 
 
@@ -919,8 +921,8 @@ async def flights(destination: str, date: str = ""):
     code = IATA.get(destination.lower(), destination.upper() if re.fullmatch(r"[A-Za-z]{3}", destination) else None)
     if not code:
         return {"status": "needs_destination", "offers": [], "say": "Which city or three-letter airport code would you like to fly to?"}
-    key, sec = os.environ.get("AMADEUS_KEY"), os.environ.get("AMADEUS_SECRET")
-    if not key or not sec:
+    key = (os.environ.get("SERPAPI_KEY") or "").strip()
+    if not key:
         return {"status": "not_configured", "offers": [], "say": "My flight service is not connected yet, so I cannot look up flight schedules or prices. I can still help you work out your travel preferences, but I cannot book tickets."}
     if not date.strip():
         return {"status": "needs_date", "offers": [], "say": "What day would you like to fly?"}
@@ -930,39 +932,41 @@ async def flights(destination: str, date: str = ""):
             raise ValueError("Past travel date")
     except (ValueError, TypeError, OverflowError):
         return {"status": "needs_date", "offers": [], "say": "I need a valid travel date that has not passed. What day would you like to fly?"}
-    mode = (os.environ.get("AMADEUS_ENV") or "test").strip().lower()
-    base = {"test": "https://test.api.amadeus.com", "production": "https://api.amadeus.com"}.get(mode)
     origin = str(CONTACTS.get("home_airport") or "").strip().upper()
-    if not base or not re.fullmatch(r"[A-Z]{3}", origin):
-        return {"status": "not_configured", "offers": [], "say": "My flight service or departure airport needs to be configured by your helper before I can search."}
+    currency = (os.environ.get("FLIGHT_CURRENCY") or "USD").strip().upper()
+    if not re.fullmatch(r"[A-Z]{3}", origin) or not re.fullmatch(r"[A-Z]{3}", currency):
+        return {"status": "not_configured", "offers": [], "say": "My departure airport needs to be configured by your helper before I can search."}
+    if origin == code:
+        return {"status": "needs_destination", "offers": [], "say": "That is the airport you would be leaving from. Where would you like to fly to?"}
     try:
-        async with httpx.AsyncClient(timeout=12) as client:
-            token_response = await client.post(base + "/v1/security/oauth2/token", data={
-                "grant_type": "client_credentials", "client_id": key, "client_secret": sec})
-            token_response.raise_for_status()
-            token = token_response.json()["access_token"]
-            response = await client.get(base + "/v2/shopping/flight-offers", headers={"Authorization": f"Bearer {token}"},
-                params={"originLocationCode": origin, "destinationLocationCode": code,
-                        "departureDate": departure_day.isoformat(), "adults": 1, "max": 3, "currencyCode": "USD"})
-            response.raise_for_status()
-            data = response.json()
-        raw_offers = data["data"]
-        if not isinstance(raw_offers, list):
-            raise ValueError("Invalid flight response")
-        prefix = "These are test flight offers, not live availability. " if mode == "test" else ""
+        async with httpx.AsyncClient(timeout=25) as client:
+            response = await client.get("https://serpapi.com/search", params={
+                "engine": "google_flights", "departure_id": origin, "arrival_id": code,
+                "outbound_date": departure_day.isoformat(), "type": 2, "adults": 1,
+                "currency": currency, "hl": "en", "api_key": key})
+        data = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
+        if response.status_code != 200 or "error" in data:
+            # SerpApi says "hasn't returned any results" for a route with nothing on that day.
+            if "result" in str(data.get("error", "")).lower():
+                return {"status": "no_offers", "offers": [], "say": "Google Flights has no flights for that trip on that day. Would you like to try another date?"}
+            raise ValueError("Flight provider rejected the search")
+        raw_offers = [*(data.get("best_flights") or []), *(data.get("other_flights") or [])]
         if not raw_offers:
-            return {"status": "no_offers", "offers": [], "is_demo": mode == "test", "say": prefix + "The flight service returned no offers for that trip. Would you like to try another date?"}
+            return {"status": "no_offers", "offers": [], "say": "Google Flights has no flights for that trip on that day. Would you like to try another date?"}
         offers = []
-        for offer in raw_offers[:3]:
+        for offer in raw_offers:
             try:
-                offers.append(spoken_flight_offer(offer, data.get("dictionaries", {}).get("carriers", {})))
+                offers.append(spoken_flight_offer(offer, currency))
             except (KeyError, IndexError, TypeError, ValueError, InvalidOperation):
                 continue
+            if len(offers) == 3:
+                break
         if not offers:
             raise ValueError("No complete flight offers")
         spoken = " ".join(f"Option {index}: {offer['summary']}" for index, offer in enumerate(offers, 1))
-        return {"status": "ok", "source": f"amadeus_{mode}", "is_demo": mode == "test", "offers": offers,
-                "say": prefix + "These are one-way offers for one adult. Times are local to each airport. " + spoken + " Prices may change. I have not booked anything."}
+        return {"status": "ok", "source": "google_flights", "offers": offers,
+                "say": "These are one-way Google Flights options for one adult. Times are local to each airport. "
+                       + spoken + " Prices can change, and I have not booked anything."}
     except (httpx.HTTPError, KeyError, ValueError, TypeError):
         return {"status": "unavailable", "offers": [], "say": "I couldn't retrieve flight details just now, so I cannot give you verified times or prices. No ticket has been booked."}
 
@@ -1031,9 +1035,23 @@ async def fetch_item(body: dict):
         sys.path.insert(0, str(ROOT))
         from vla.arm_client import fetch
         status = await asyncio.to_thread(fetch, os.environ.get("ARM_URL") or "http://127.0.0.1:8020")
-        started = status.get("active") or status.get("starting")
-        return {"say": "I'm getting it for you — the arm is on its way." if started
-                else f"I can't start the arm right now: {status.get('last_error') or 'it says no'}"}
+        # /start answers before the arm has moved, so "starting" is as much of a yes as "active".
+        # Testing active alone made Pam report the arm broken while it was driving to home.
+        if not (status.get("active") or status.get("starting")):
+            # The technical reason goes to the terminal; the person hears something they
+            # can act on, not the arm's error string.
+            log("ARM", f"fetch refused: {status.get('last_error')}")
+            return {"say": "I can't get that for you right now. Ask your helper to check the arm."}
+        # The hand-over IS the dose, by product decision -- see doses.confirm_by_robot,
+        # which documents what that costs. Only for medication: fetching the TV remote
+        # must not mark pills as taken.
+        recorded = False
+        if doses.enabled() and doses.MEDICATION.search(str(body.get("item", "")) or "pills"):
+            recorded = (await asyncio.to_thread(doses.confirm_by_robot)).get("recorded", False)
+            log("ARM", f"fetch({body.get('item')!r}) -> dose recorded as taken: {recorded}")
+        return {"say": "I'm getting it for you — the arm is on its way." +
+                       (" I've noted that as your pills taken." if recorded else ""),
+                "dose_recorded": recorded}
     except Exception:
         return {"say": "I can't reach the arm right now — but I remember where it is if that helps."}
 
@@ -1063,10 +1081,11 @@ async def open_camera_relay():
 async def camera_stream(ws: WebSocket):
     origin = ws.headers.get("origin")
     if origin and urlsplit(origin).netloc != ws.headers.get("host"):
-        print(f"Camera origin mismatch: origin={urlsplit(origin).netloc!r}, host={ws.headers.get('host')!r}", flush=True)
+        log("CAMERA", f"origin mismatch: origin={urlsplit(origin).netloc!r} host={ws.headers.get('host')!r} "
+                      f"-- open the laptop's own address, not an IDE preview proxy")
         await ws.accept()
         await ws.send_json({"type": "camera_error", "retry": False,
-                            "message": "This page's address is blocking the camera connection. Open Pam directly at http://127.0.0.1:8000/ on your laptop, or the laptop's HTTPS address on your phone, not the IDE preview."})
+                            "message": "Pam can't use the camera from this page. Ask your helper to open Pam's usual address."})
         await ws.close(code=1008)
         return
     await ws.accept()
@@ -1098,10 +1117,12 @@ async def camera_stream(ws: WebSocket):
             task.result()
     except ssl.SSLCertVerificationError:
         with suppress(RuntimeError, WebSocketDisconnect):
-            await ws.send_json({"type": "camera_error", "message": "The camera relay certificate does not match Pam's certificate. Ask your helper to restart the pipeline with phone/cert.pem."})
+            log("CAMERA", "relay TLS mismatch: restart memory_pipeline with --cert phone/cert.pem --key phone/key.pem")
+            await ws.send_json({"type": "camera_error", "message": "Pam can't reach the camera service. Ask your helper to check the laptop."})
     except (OSError, TimeoutError, ValueError, ConnectionClosed, InvalidHandshake):
         with suppress(RuntimeError, WebSocketDisconnect):
-            await ws.send_json({"type": "camera_error", "message": "Camera is on, but the memory pipeline is unavailable. Ask your helper to start the pipeline on the laptop. Pam will retry automatically."})
+            log("CAMERA", "relay unreachable on 8765: is memory_pipeline running with --source wss://0.0.0.0:8765 ?")
+            await ws.send_json({"type": "camera_error", "message": "Your camera is on, but Pam isn't receiving it yet. Ask your helper to check the laptop. Pam will keep trying."})
     except WebSocketDisconnect:
         pass
     finally:
@@ -1209,12 +1230,16 @@ def main():
     http = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=8000, loop="none"))
     loop.create_task(reminder_loop())
     if doses.env_enabled():
-        loop.create_task(doses.watch(_reminders_with_fired, MEMORY_JSONL, _broadcast))
+        loop.create_task(doses.watch(_reminders_with_fired, MEMORY_JSONL, _broadcast,
+                                     schedule_fn=lambda: doses.schedule_store().load()))
     import socket
     ip = socket.gethostbyname(socket.gethostname())
     print(f"\n  Phone:  https://{ip}:8443/        (Pam — voice agent)")
     print(f"          https://{ip}:8443/camera  (camera stream)")
     print(f"  Laptop: http://127.0.0.1:8000/  (testing)\n")
+    # First run: collect whatever is still missing and approve Google once. After that the
+    # stored refresh token keeps the calendar working and startup stays quiet.
+    loop.call_later(1.5, setup.start)
     loop.run_until_complete(asyncio.gather(https.serve(), http.serve()))
 
 
