@@ -75,6 +75,13 @@ class FailsClosed(Base):
         self.assertEqual(r.status_code, 200)
         self.assertIn("isn't set up yet", r.text)
 
+    def test_the_page_is_called_pam_oversight_everywhere_a_person_reads_it(self):
+        text = self.client.get("/caregiver").text
+        self.assertIn("<title>Pam oversight</title>", text)
+        self.assertEqual(text.count("<h1>Pam oversight</h1>"), 3)      # not set up, sign in, and the page itself
+        self.assertNotIn("Caregiver dashboard", text)
+        self.assertNotIn("caregiver dashboard", text)
+
 
 class LoggingIn(Base):
     def test_right_pin_signs_in_and_opens_protected_routes(self):

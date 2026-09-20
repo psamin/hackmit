@@ -7,7 +7,7 @@
 WHAT THIS IS, AND IS NOT
 --------------------------------------------------------------------------------
 There is no sign-up, no password, no reset and no per-person identity. One caregiver PIN
-opens the dashboard. That is enough to keep the medication data away from anyone else on the
+opens Pam oversight (the caregiver's page). That is enough to keep the medication data away from anyone else on the
 same network. It is not enough for a real product, which would use real accounts or a
 sign-in provider so that a change could be attributed to a person. The audit log will say
 "the caregiver", not who.
@@ -19,7 +19,7 @@ It protects only the routes in this file. The patient-side endpoints elsewhere i
 THE RULES
 --------------------------------------------------------------------------------
   fails closed     no PIN, or a PIN shorter than MIN_PIN_LEN, means the feature is OFF: every
-                   protected route answers 404 and the page says the dashboard is not set up.
+                   protected route answers 404 and the page says Pam oversight is not set up.
                    Forgetting to configure it can never leave the data open.
   PIN stays put    it is compared in constant time, sent only in a JSON body (never a URL), and
                    never logged, echoed, or stored. What the browser keeps is a random session
@@ -154,7 +154,7 @@ async def logout(request: Request):
 
 @router.get("/api/caregiver/status", dependencies=[Depends(require_caregiver)])
 async def status():
-    """What the dashboard shell shows for now: which parts of the system are switched on."""
+    """What Pam oversight shows for now: which parts of the system are switched on."""
     import doses
     health = doses.schedule_health()
     return {"medication_check": doses.enabled(), "demo_timings": doses.demo_mode(),

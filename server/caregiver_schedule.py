@@ -18,7 +18,9 @@ import time
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 
+import adherence
 import caregiver
+import doses
 import schedule as sched
 import schedule_parse as sp
 
@@ -62,6 +64,15 @@ async def current_schedule():
     return {"exists": True, "version": latest.version, "saved_at": latest.ts, "lines": sched.describe(latest.schedule),
             "instructions": prefill,
             "history": [{"version": e.version, "ts": e.ts, "action": e.action, "changes": e.changes} for e in entries[:6]]}
+
+
+@router.get("/api/caregiver/adherence")
+async def adherence_view(days: int = 14):
+    """What Pam oversight shows: each recent day, each dose and whether it was tapped on time, late or not at all.
+    Labelled as recorded, never as "taken": these are taps. The caregiver sees this even if the patient's
+    streak is hidden."""
+    days = max(1, min(int(days), 90))
+    return adherence.public(doses.adherence_summary(), days)
 
 
 @router.post("/api/caregiver/schedule/parse")
