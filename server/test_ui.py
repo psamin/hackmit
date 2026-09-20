@@ -169,6 +169,21 @@ class BrowserTests(unittest.TestCase):
         self.context.close()
         self.assertEqual(self.errors, [])
 
+    def test_flight_answer_reaches_voice_without_a_screen_card(self):
+        page = self.page
+        answer = "Example Air leaves Boston at 8:30 AM and arrives in New York at 10:00 AM, nonstop, for 125 euros."
+        page.route("**/api/flights?*", lambda route: route.fulfill(json={"say": answer, "status": "ok"}))
+        page.goto(self.base)
+        sent = page.evaluate("""async () => {
+          const messages = [];
+          ws = {readyState: WebSocket.OPEN, send: message => messages.push(JSON.parse(message))};
+          try { await runFunction({id:'voice-flight',name:'search_flights',arguments:JSON.stringify({destination:'New York',date:'next Friday'})}); }
+          finally { ws = null; }
+          return messages;
+        }""")
+        self.assertEqual(sent, [{"type": "FunctionCallResponse", "id": "voice-flight", "name": "search_flights", "content": answer}])
+        self.assertTrue(page.locator("#card").is_hidden())
+
     def test_google_calendar_setup_states(self):
         page = self.page
         state = {"configured": False, "connected": False, "can_connect_here": True}
@@ -188,6 +203,14 @@ class BrowserTests(unittest.TestCase):
         state["can_connect_here"] = False
         page.evaluate("refreshCalendarStatus()")
         self.assertTrue(page.locator("#calendar-connect").is_hidden())
+
+    def test_dialog_close_preserves_new_keyboard_focus(self):
+        page = self.page
+        page.goto(self.base)
+        page.locator("#features-open").click()
+        page.evaluate("document.getElementById('features-dialog').close(); document.getElementById('tab-memories').focus()")
+        page.wait_for_timeout(100)
+        self.assertEqual(page.locator(":focus").get_attribute("id"), "tab-memories")
 
     def test_new_composition_and_real_activity(self):
         page = self.page
@@ -400,7 +423,7 @@ class BrowserTests(unittest.TestCase):
             page.evaluate("stopCamera()")
             self.assertTrue(page.locator("#mini-camera-empty").is_visible())
 
-    def test_layout_preferences_and_caregiver(self):
+    def test_layout_preferences_and_themes(self):
         page = self.page
         page.goto(self.base)
         page.screenshot(path=str(self.artifacts / "desktop.png"), full_page=True)
@@ -421,9 +444,8 @@ class BrowserTests(unittest.TestCase):
         page.reload()
         self.assertEqual(page.evaluate("document.documentElement.dataset.large"), "true")
         self.assertEqual(page.evaluate("document.documentElement.dataset.contrast"), "true")
-        page.locator("#caregiver").click()
-        page.wait_for_selector("#card.show a.action")
-        self.assertTrue(page.locator("#card a.action").first.get_attribute("href").startswith("tel:"))
+        self.assertEqual(page.locator("#caregiver").count(), 0)
+        self.assertTrue(page.evaluate("['send_message','call_contact','call_caregiver'].every(name => !Object.hasOwn(handlers, name) && !CAPABILITIES.some(capability => capability[0] === name))"))
         page.evaluate("document.documentElement.removeAttribute('data-contrast'); document.documentElement.removeAttribute('data-large')")
         page.emulate_media(color_scheme="dark")
         page.screenshot(path=str(self.artifacts / "dark.png"), full_page=True)
@@ -638,7 +660,7 @@ class BrowserTests(unittest.TestCase):
                 route.continue_()
                 return
             output = {"say": f"Result for {path}"}
-            if path in ("/api/find", "/api/call", "/api/message", "/api/ride", "/api/flights"):
+            if path in ("/api/find", "/api/ride", "/api/flights"):
                 output["card"] = {"title": path, "body": "Test response"}
             if path == "/api/photo-info":
                 output["photo"] = {"url": "/photos/sarah", "caption": "Sarah, your granddaughter"}
