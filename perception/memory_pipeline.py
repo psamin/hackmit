@@ -248,8 +248,8 @@ def main():
                  f"static_camera={args.static_camera} arm={'off' if args.no_arm else 'on'}")
     log("START", f"gate: arm after {ACTIVE_MIN} frames of motion, fire after {REST_MIN} frames "
                  f"at rest ({REST_MIN / args.fps:.1f}s), move threshold {MOVE_THR:.4f}/frame")
-    log("START", f"targets: {', '.join(targets)}   (+ '{ARM}' as the arm/decoy class)")
     targets = [t.strip() for t in args.targets.split(",")]
+    log("START", f"targets: {', '.join(targets)}   (+ '{ARM}' as the arm/decoy class)")
     out = Path(args.out); (out / "events").mkdir(parents=True, exist_ok=True); (out / "last_seen").mkdir(exist_ok=True)
     model = YOLOE(args.weights); model.set_classes(targets + [ARM])
 
