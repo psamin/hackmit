@@ -371,30 +371,12 @@ class GoogleCalendarTests(unittest.IsolatedAsyncioTestCase):
         with TestClient(app.app, base_url="http://127.0.0.1:8000", client=("10.0.0.4", 55555)) as client:
             self.assertEqual(client.get(gc.CONNECT_PATH).status_code, 403)
 
-    async def test_startup_opens_consent_once_then_stays_connected(self):
-        opened, messages = [], []
-        self.assertTrue(gc.start_setup(opened.append, messages.append))
-        self.assertEqual(opened, ["http://127.0.0.1:8000" + gc.CONNECT_PATH])
-        self.assertTrue(any("browser" in message.lower() for message in messages))
+    async def test_reconnecting_reuses_the_stored_client_after_a_reset(self):
         self.service.save(self.credentials())
-        opened.clear()
-        self.assertFalse(gc.start_setup(opened.append, messages.append))
-        self.assertEqual(opened, [])
-        self.assertTrue(any("connected" in message.lower() for message in messages))
-
-    async def test_startup_without_credentials_explains_setup_and_opens_nothing(self):
-        opened, messages = [], []
-        with patch.dict(os.environ, {"GOOGLE_CALENDAR_CLIENT_ID": "", "GOOGLE_CALENDAR_CLIENT_SECRET": ""}):
-            self.assertFalse(gc.start_setup(opened.append, messages.append))
-        self.assertEqual(opened, [])
-        self.assertTrue(any(gc.REDIRECT_URI in message for message in messages))
-
-    async def test_startup_never_blocks_pam_when_the_browser_fails(self):
-        def refuse(url):
-            raise OSError("no browser")
-        messages = []
-        self.assertFalse(gc.start_setup(refuse, messages.append))
-        self.assertTrue(any(gc.CONNECT_PATH in message for message in messages))
+        self.assertTrue(self.service.status()["connected"])
+        self.service.reset()
+        self.assertTrue(self.service.status()["connected"])   # reloaded from the encrypted file
+        self.assertEqual(self.service.pending, {})
 
     async def test_callback_codes_are_redacted_from_access_logs(self):
         record = logging.LogRecord("uvicorn.access", logging.INFO, "", 1, "%s %s %s %s %s",

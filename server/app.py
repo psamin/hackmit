@@ -32,6 +32,7 @@ from fastapi.staticfiles import StaticFiles
 import doses  # medication check; PAM_DOSE_CHECK=off disables it (see doses.py)
 import caregiver  # caregiver dashboard behind a shared PIN; off until CAREGIVER_PIN is set (see caregiver.py)
 import caregiver_schedule  # the dashboard's medication-schedule routes (all behind the PIN)
+import setup  # laptop-only first-run page: Google Calendar client + flight key (see setup.py)
 
 ROOT = Path(__file__).resolve().parents[1]
 HERE = ROOT / "server"
@@ -73,6 +74,7 @@ google_calendar.install_log_filter()
 app = FastAPI(title="Pam")
 app.include_router(caregiver.router)
 app.include_router(caregiver_schedule.router)
+app.include_router(setup.router)
 
 
 # --------------------------------------------------------------------------
@@ -713,7 +715,7 @@ async def google_calendar_callback(request: Request):
         await google_calendar.calendar_service.finish(request.query_params.get("state", ""),
             request.cookies.get(google_calendar.COOKIE, ""), request.query_params.get("code", ""),
             denied=bool(request.query_params.get("error")))
-        response = RedirectResponse("/?calendar=connected", status_code=303)
+        response = RedirectResponse("/setup?calendar=connected", status_code=303)
     except google_calendar.CalendarError as exc:
         response = PlainTextResponse(str(exc), 400)
     response.delete_cookie(google_calendar.COOKIE, path="/api/calendar/google")
@@ -1127,8 +1129,9 @@ def main():
     print(f"\n  Phone:  https://{ip}:8443/        (Pam — voice agent)")
     print(f"          https://{ip}:8443/camera  (camera stream)")
     print(f"  Laptop: http://127.0.0.1:8000/  (testing)\n")
-    # Sign in to Google once at startup; the stored refresh token keeps it working after that.
-    loop.call_later(1.5, google_calendar.start_setup)
+    # First run: collect whatever is still missing and approve Google once. After that the
+    # stored refresh token keeps the calendar working and startup stays quiet.
+    loop.call_later(1.5, setup.start)
     loop.run_until_complete(asyncio.gather(https.serve(), http.serve()))
 
 
