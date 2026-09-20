@@ -43,6 +43,71 @@ def serve_control(actions, status, port):
     return server
 
 
+def watch_for_grasp(control, policy, args):
+    """Hand the bottle over the moment the policy closes on it, then stand down.
+
+    The policy is trained on the pick alone and its episodes end when the gripper shuts, so it has nothing sensible
+    to say after that. A thread watches the gripper; once it has been closed for GRASP_SETTLE_S - long enough that a
+    single noisy sample cannot trigger it - the rollout stops and the taught preset plays: lift, swing round, hold
+    the bottle out, open. Returning to home is the caller's next rollout, which drives there anyway.
+    """
+    import json as _json
+    import threading
+    import time as _time
+
+    from dimos.control.tasks.trajectory_task.trajectory_task import TrajectoryExecutionStatus
+    from dimos.robot.manipulators.openyam.config import OPENYAM_JOINTS
+
+    from vla.scripted_demos import build_trajectory
+
+    poses = _json.load(open(args.handover))["poses"]
+    gripper_joint = OPENYAM_JOINTS[-1]
+    GRASP_SETTLE_S = 0.6
+    done = threading.Event()
+
+    def play(motion):
+        start = [control.get_joint_positions()[n] for n in OPENYAM_JOINTS]
+        trajectory, duration = build_trajectory(OPENYAM_JOINTS, start, motion, args.speed, 0.0,
+                                                __import__("numpy").random.default_rng(0))
+        if control.execute_trajectory(trajectory).status is TrajectoryExecutionStatus.ACCEPTED:
+            _time.sleep(duration + 0.5)
+            return True
+        return False
+
+    def run():
+        """Lift and turn holding the bottle, present it, then open."""
+        policy.stop_rollout()
+        hold = [p for p in poses if not p["gripper"]]
+        release = [p for p in poses if p["gripper"]]
+        if hold:
+            play(hold)
+        print(f"presenting the bottle for {args.present_s:.0f}s", flush=True)
+        _time.sleep(args.present_s)
+        if release:
+            play(release)
+        print("handover done", flush=True)
+
+    def watch():
+        closed_since = None
+        while not done.is_set():
+            _time.sleep(0.1)
+            if not policy.rollout_status().get("active"):
+                closed_since = None
+                continue
+            value = control.get_joint_positions().get(gripper_joint)
+            if value is None or value > args.grip_closed:
+                closed_since = None
+                continue
+            closed_since = closed_since or _time.time()
+            if _time.time() - closed_since >= GRASP_SETTLE_S:
+                print(f"gripper closed at {value:.2f} - handing over", flush=True)
+                closed_since = None
+                run()
+
+    threading.Thread(target=watch, daemon=True).start()
+    return run
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     mode = ap.add_mutually_exclusive_group(required=True)
@@ -53,6 +118,16 @@ def main() -> None:
     ap.add_argument("--fps", type=float, default=30.0, help="the training dataset's rate")
     ap.add_argument("--camera-index", type=int, default=0, help="--real: OpenCV index of the arm camera")
     ap.add_argument("--control-port", type=int, default=8020, help="localhost control for arm_client.py; 0 = off")
+    ap.add_argument("--speed", type=float, default=0.3, help="--handover: rad/s cap for the preset motion")
+    ap.add_argument("--handover", default=None,
+                    help="preset poses to play the moment the policy closes the gripper, e.g. vla/spots/handover.json")
+    ap.add_argument("--present-s", type=float, default=2.0,
+                    help="--handover: seconds to hold the bottle out to the person before opening the gripper")
+    ap.add_argument("--grip-closed", type=float, default=0.85,
+                    help="--handover: gripper below this counts as closed on the bottle")
+    ap.add_argument("--replay-episode", type=int, default=None,
+                    help="--mock: feed this dataset episode's real frames instead of a grey image")
+    ap.add_argument("--dataset", default="openyam_dataset", help="--replay-episode: the LeRobot dataset directory")
     ap.add_argument("--viz", action="store_true",
                     help="add dimOS's Viser 3D view of the arm, served on http://127.0.0.1:8080")
     args = ap.parse_args()
@@ -79,10 +154,14 @@ def main() -> None:
         if input("Type 'go' to continue: ").strip() != "go":
             raise SystemExit("aborted")
 
-    if args.mock:
+    if args.mock and args.replay_episode is not None:
+        from vla.replay_camera import ReplayCamera
+
+        camera = ReplayCamera.blueprint(dataset=args.dataset, episode=args.replay_episode)
+    elif args.mock:
         from vla.sim_test import SyntheticCamera
 
-        camera = SyntheticCamera.blueprint()
+        camera = SyntheticCamera.blueprint()  # a flat grey frame: proves the plumbing, tells the policy nothing
     else:
         from dimos.hardware.sensors.camera.module import CameraModule
         from dimos.hardware.sensors.camera.webcam import Webcam
@@ -109,10 +188,15 @@ def main() -> None:
     )
     coordinator = ModuleCoordinator.build(blueprint)
     policy = coordinator.get_instance(RemotePolicyModule)
-    actions = {"p": policy.preflight_rollout, "s": policy.start_rollout, "x": policy.stop_rollout}
+    control = coordinator.get_instance(ControlCoordinator)
+    handover = watch_for_grasp(control, policy, args) if args.handover else (lambda: None)
+    actions = {"p": policy.preflight_rollout, "s": policy.start_rollout,
+               "x": policy.stop_rollout, "h": lambda: (handover(), policy.rollout_status())[1]}
     if args.control_port:
         serve_control({"preflight": policy.preflight_rollout, "start": policy.start_rollout,
-                       "stop": policy.stop_rollout}, policy.rollout_status, args.control_port)
+                       "stop": policy.stop_rollout,
+                       "handover": lambda: (handover(), policy.rollout_status())[1]},
+                      policy.rollout_status, args.control_port)
         print(f"arm control on http://127.0.0.1:{args.control_port}", flush=True)
     try:
         for line in sys.stdin if not sys.stdin.isatty() else iter(lambda: input("p/s/x/q: "), None):
