@@ -532,3 +532,196 @@ python memory_pipeline.py --source 0 --static-camera --out runs/live   # webcam
 
 `phone/cert.pem` is gitignored — each person generates their own via `serve.py`.
 Model weights are gitignored too and shared out of band.
+
+### Pam camera and accessible UI verification
+
+- `phone/agent.html` now sends JPEGs to the same-origin `/api/camera` WebSocket.
+  `server/app.py` forwards them to `wss://127.0.0.1:8765`, verifying the relay
+  against `phone/cert.pem`. Only the standalone `/camera` page still connects to
+  port 8765 directly. An optional `CAMERA_RELAY_URL` supports a different local
+  relay address (loopback only).
+- Restart `python server/app.py` after changing backend routes. The HTML is read
+  from disk immediately, so a new page with an old Python process can produce
+  403 WebSocket rejections. Use the direct localhost/HTTPS origin, not an IDE
+  preview proxy, for microphone and camera testing.
+- A visible camera preview proves capture, not delivery. Pam marks it connected
+  after the server forwards a frame to the relay. It retries interrupted links;
+  Stop camera releases tracks and cancels retries independently of voice.
+- Saved-memory notifications tail the configured `MEMORY_JSONL` through SSE.
+  Existing records populate quietly; complete new records notify. Partial lines
+  wait for completion, repeated records are deduplicated, and uncertain events
+  are not described as confirmed resting places. This works without Elasticsearch.
+- Do not casually restart perception with an existing `--out` directory:
+  `memory_pipeline.py` opens `events.jsonl` in write mode and overwrites it.
+  Use a fresh run directory and explicitly coordinate `MEMORY_JSONL`, or obtain
+  permission to replace the previous artifacts.
+- Run `perception/.venv/Scripts/python.exe server/test_ui.py -v` for isolated
+  backend/browser tests: real local TLS, camera failure/recovery, all 12 UI
+  handlers with mocked responses, file-to-SSE updates, reduced motion,
+  light/dark contrast, preferences, keyboard access, and 320-1440px layouts.
+  Fixtures use temporary memory files, never the real memory database.
+- `server/test_real_dg.py` checks a real Deepgram browser session, asserts PCM
+  bytes in both directions, and verifies an object question causes a function
+  response followed by a spoken location and visible five-line subtitles.
+  On Windows, `--spoken` synthesizes a question with SAPI into a temporary WAV
+  and feeds Chromium's fake microphone: actual capture, STT, memory lookup, and
+  answer audio all run. Actual phone microphone/speaker behavior still needs a
+  human test.
+- The medicine/reminder shortcuts were removed at the user's request. The
+  Features dialog lists all 12 configured functions plus step-by-step guidance;
+  browsing or searching it never executes an action. A rendered result card
+  alone does not establish that a voice agent received the result.
+- Camera origin mismatches must not be resolved by allowing arbitrary origins.
+  The endpoint returns an explanatory error and closes before opening the relay;
+  the page suppresses automatic retries for this non-transient failure.
+- Pam uses Talk / Memories / Camera tabs in the TOP navigation. There is no
+  bottom navigation anymore. The main region scrolls independently. A compact
+  camera strip stays outside the tab panels: above the call room on desktop,
+  below it on phones, and beside it on short landscape screens.
+  Expanding it uses a second video element with the SAME MediaStream, never
+  another getUserMedia call. Closing the dialog leaves capture and relay intact.
+  Camera off, live preview, and connection-to-memory are distinct states.
+- Conversation history is a native dialog, opened from the Conversation link
+  or from Features on short screens. Tests must open it before reading visible
+  transcript text; text_content() can inspect its retained content while closed.
+- The 3D voice pearl uses native WebGL with a CSS fallback, no CDN or framework.
+  Input and output AudioContext analysers drive its shape from actual audio.
+  Output playback sources determine speaking state through their final onended
+  event; AgentAudioDone can arrive before queued audio finishes playing.
+- Rendering is capped at 30 animation frames per second and a 420px drawing
+  buffer dimension. Reduced motion, Pause visual motion, background documents,
+  offscreen visuals, and non-Talk views stop the animation loop. Muting disables
+  microphone tracks without stopping Pam's playback or camera.
+- `server/test_ui.py` also checks audio-reactive WebGL, CSS fallback, tab keyboard
+  controls, recent-memory search, mute/unmute, and a 320x568 touch viewport.
+- The idle Talk screen fits 320x568 through 430x932 and 768x1024 without
+  scrolling. Controls and the persistent camera stay below the header and
+  within the viewport. Long
+  results may scroll inside main; accessibility text enlargement must remain
+  usable rather than being clipped to force a fit. Long subtitle tests assert
+  the Talk control remains onscreen, not just that the viewport lacks a scrollbar.
+- The voice sphere is a plain shaded circle (no ray marching): it breathes
+  slowly and swells with the live audio level. It needs
+  `OES_standard_derivatives` for anti-aliased edges; the CSS fallback renders
+  when WebGL or that extension is unavailable.
+- The presentation layer was fully replaced with `phone/assets/pam.css`.
+  Do not add inline CSS overrides to resurrect the previous orb-card layout.
+  Tokens: white `#fff`, paper `#f5f7fa`, ink `#1b2938`, slate `#536375`,
+  line `#e3e9f0`, blue `#2367bb`, pressed blue `#19549d`.
+- White is now EXPLICITLY locked even under the system dark preference, per
+  the user's request. Higher contrast, larger text, and reduced motion remain.
+- Reference-driven structure: top pill navigation; greeting/date; compact
+  camera session strip; a white telehealth-style call room with a small Pam
+  presence header, central dialogue area and bottom call controls; real recent
+  memories in a desktop activity column. The activity column is omitted on
+  mobile because the Memories tab provides the same records.
+- The elder SVG appears in the idle welcome scene and Features dialog. It is
+  hidden when subtitles arrive. No fake charts, patient metrics or sample
+  memories are added to the live UI. Sidebar rows are generated from the same
+  SSE memory records as the Memories view. Tabler icons retain their license.
+- The ring and sphere have their OWN fixed-size visual zone with paint
+  containment. Never put text and the sphere inside a size-contained flex
+  stage with min-height:0: added captions/results can collapse that stage and
+  paint the sphere over text. Reserve separate grid rows, or columns on short
+  screens. The ring uses an inset within the sphere box, not a negative inset.
+  The 12-size live-resize regression also needs speaking-state overlap tests.
+- Mute is hidden until SettingsApplied and hidden again on stop(). The
+  .actions grid is Features + Talk, then Features + Talk + Mute when live.
+- Saved-location images are gated by showCard(card, source): only source
+  find_object may render card.image. Other function calls clear stale results.
+  Memory notifications and browsing history never auto-display saved images.
+  Explicit show_photo remains a separate family-photo capability.
+- Agent ConversationText messages feed #subtitle-text. #subtitle-window is
+  clipped to five exact line-heights and scrolls to its newest lines after
+  updates and resizes. A new user turn resets on the next assistant chunk;
+  stopping voice leaves the last answer readable. These are transcript-driven
+  captions, not word-timestamp karaoke. Full history remains in the dialog.
+- Memories are an interactive collection: By item groups observations by a
+  normalized object label; Timeline shows individual records newest-first.
+  Both modes use the same text search. Counts refer to observations, NOT
+  unique physical objects or distinct places. Recent-memory sidebar cards
+  share the same grouped representation and object icons (Tabler).
+- Memory cards open a native history dialog, not the Talk result panel.
+  Previous/Next and timeline entries select a recorded observation. Opening
+  captures a snapshot of that item's history, so incoming SSE records do not
+  change the observation being read. On close, focus returns to the matching
+  newly rendered card if the original trigger was replaced by an SSE update.
+- Uncertain observations retain their unconfirmed-location label; missing or
+  invalid timestamps say Time not recorded rather than showing January 1970.
+  Neither browsing mode nor the history dialog requests saved frame images.
+- The welcome illustration can occupy up to 400px (previously 240px). On
+  mobile, text stays on the left and the illustration on the right at every
+  viewport height; do not reintroduce the old tall-phone vertical stack.
+  It stays hidden during subtitles.
+- The resize checks include top-nav geometry, a white-only system-theme
+  invariant, caption/control separation with larger text, and real sidebar
+  activity. Prefer running the speech smoke test separately from GPU-heavy
+  screenshot tests: one concurrent run transcribed only part of the synthetic
+  question, while an isolated retry passed on the Windows laptop.
+- The logo is `phone/assets/pam-logo.png` (white star-in-"p" wordmark on
+  transparency, served at `/assets/`). It is rendered via CSS `mask-image` on
+  `.wordmark` with `background-color: var(--blue)`, so it takes the theme
+  colour and stays visible on white. Never place the raw PNG on a light
+  background; `test_logo_renders_from_png_mask` guards this.
+- `test_contrast_and_keyboard` waits 250ms after switching colour scheme so
+  button `background-color` transitions settle before sampling. Without that,
+  a mid-fade colour can produce a false contrast failure.
+- Reading options retain larger text, higher contrast, and reduced motion.
+  Panels are solid; the old pam-opaque preference is no longer used.
+
+### Calendar and capability audit
+
+- `server/google_calendar.py` implements Google's read-only OAuth flow using
+  google-auth-oauthlib, state/cookie binding and PKCE. Setup is laptop-only at
+  `http://127.0.0.1:8000/api/calendar/google/connect`; the registered callback must
+  be `http://127.0.0.1:8000/api/calendar/google/callback`. Client ID/secret belong
+  in the gitignored server/.env, never in chat or source. Google Maps credentials
+  do not authorize Calendar. Features shows the current connection/setup state.
+- Tokens persist outside the repository in the user's Pam application-data
+  directory, encrypted with Windows DPAPI on Windows and mode 0600 elsewhere.
+  Callback codes/state are redacted from uvicorn access logs. Never serve token
+  files via the frame route; frames are restricted to image files in run folders.
+- Google Calendar reads the primary calendar, expands recurring events with
+  singleEvents=true, follows pagination, handles cancellations/all-day events,
+  and computes today in the calendar's timezone. There is no silent demo.ics
+  fallback. Live account verification requires the user's OAuth credentials and
+  consent; mocked integration tests alone do not prove a real account is linked.
+- `server/test_capabilities.py -v` tests real backend contracts with temporary
+  reminder files and mocked delivery/robot/Google providers. `--live-routing`
+  tests real Deepgram function selection without executing ANY requested tools;
+  `--only guide_me` checks the prompt-only step-by-step response separately.
+  Browser tests also isolate the camera relay and calendar token store. Never
+  inject synthetic video into a live memory pipeline during voice smoke tests.
+- Reminder tests cover tomorrow/past-clock parsing, validation, due delivery,
+  and persistence of fired flags. The scheduler must save the modified list,
+  not re-read the old file and accidentally discard fired=True changes.
+- Texting and calling were removed at the user's request: no send_message,
+  call_contact, or call_caregiver tools, no message/call/caregiver-card endpoints,
+  and no Get help calling button. Contacts still supply family-photo captions.
+  Do not reintroduce phone or SMS actions through a merge or fallback.
+- Capability claims must distinguish API/card tests from real delivery. Uber is
+  an external-app handoff, and fetch_object starts a configured robot policy
+  without passing the item name. Do not live-test side effects without approval.
+- Voice is the primary interface. Flight function results must contain the actual
+  offer details in `say`, because only `say` reaches the voice model. Do not put
+  essential information solely in a card or tell the user to look at a screen.
+  Flights no longer fall back to a Google Flights link when credentials are absent.
+- Flight searches use AMADEUS_ENV=test by default and label cached test offers as
+  non-live examples. Production credentials plus AMADEUS_ENV=production are needed
+  for real-time quotes. Never silently switch to production or buy tickets.
+  One-way/one-adult offers include airports, local dates/times, airline, stops,
+  total price and its actual currency; the voice agent presents one at a time.
+- Uber handoff responses explain the limitation through speech and can
+  retain optional helper cards. Do not equate prompt-level verbal approval with a
+  server-enforced confirmation gate. Restart the voice session after prompt changes.
+- When integrating main, preserve its caregiver dashboard PIN gate and medication
+  confirmation/kill-switch protections. Removing calling also removes medication
+  escalation tel: links, not the instruction to check with a caregiver or the
+  person's explicit dose-confirmation controls.
+- get_time_and_place must consume the shared calendar() result, not independently
+  reopen demo.ics. A not_connected/unavailable calendar maps to unknown, not an
+  empty day. Orientation, dose-safety, and caregiver-auth suites must pass along
+  with the capability and browser suites when these branches are merged.
+- Native dialog close events can arrive after the user focuses another control.
+  Only restore focus when it is on the document body or still inside that dialog;
+  unconditional restoration can steal focus from keyboard tab navigation.

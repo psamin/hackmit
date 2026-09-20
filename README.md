@@ -42,10 +42,13 @@ perception/.venv/Scripts/python server/app.py
 
 Deepgram handles listen/think/speak over one WebSocket; the page holds a token from
 `/api/dg-token`, and each agentic action is a client-side function call back to
-`server/app.py`. Irreversible actions (text, call, ride, arm) render a big confirm
-card on the phone — the tap is the consent. Reminders fire through `/api/push`
-(SSE) into the live session via `InjectUserMessage`. Without ES/Twilio/Amadeus keys
-everything degrades to memory.jsonl / link cards.
+`server/app.py`. Texting and calling are not supported. Reminders fire through
+`/api/push` (SSE) into the live session via `InjectUserMessage`. Memory lookup can
+fall back to memory.jsonl. Calendar and flight services explicitly report when
+they are not connected; flight results are spoken rather than handed off to a
+search link. Ride booking still requires completion in Uber, and robot actions
+require a configured policy and explicit user approval. See `server/RUNBOOK.md`
+for Google Calendar sign-in, flight-provider setup, and safe verification.
 
 ## Arm (5× Damiao DM-J4340P-2EC, CAN at 1 Mbit/s)
 

@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pam — caregiver dashboard</title>
+<style>
+  :root {
+    --bg: #f6f7fb; --card: #ffffff; --ink: #1c2233; --sub: #5a6478; --line: #dde1ec;
+    --accent: #2f5fd0; --on-accent: #ffffff; --ok: #17794a; --off: #8a5a00; --err: #b3261e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #10131c; --card: #181c28; --ink: #eef0f7; --sub: #a3abbf; --line: #2b3145;
+      --accent: #8fb0ff; --on-accent: #0b1020; --ok: #62d49a; --off: #f0b85a; --err: #ff8a80;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 18px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 880px; margin: 0 auto; padding: 24px 16px 64px; }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 20px; }
+  h1 { font-size: 1.5rem; margin: 0; }
+  h2 { font-size: 1.05rem; margin: 0 0 4px; }
+  p { margin: 0 0 12px; }
+  .sub { color: var(--sub); font-size: .92rem; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 20px; margin-bottom: 16px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; }
+  .tile { border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+  .tile .label { color: var(--sub); font-size: .85rem; }
+  .tile .value { font-size: 1.15rem; font-weight: 600; }
+  .on { color: var(--ok); } .off { color: var(--off); }
+  label { display: block; font-weight: 600; margin-bottom: 6px; }
+  input { width: 100%; font: inherit; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+  input:focus-visible, button:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  button { font: inherit; font-weight: 600; padding: 12px 20px; border-radius: 999px; border: 0; cursor: pointer; background: var(--accent); color: var(--on-accent); min-height: 48px; }
+  button.quiet { background: transparent; color: var(--accent); border: 1px solid var(--line); }
+  button:disabled { opacity: .55; cursor: not-allowed; }
+  .error { color: var(--err); min-height: 1.5em; margin-top: 10px; }
+  .soon { border-style: dashed; }
+  code { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px; font-size: .9em; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <section id="loading" class="card" aria-live="polite"><p class="sub">Checking access…</p></section>
+
+  <section id="off" class="card" hidden>
+    <h1>Caregiver dashboard</h1>
+    <p>The dashboard isn't set up yet.</p>
+    <p class="sub">To turn it on, add a line <code>CAREGIVER_PIN=…</code> to <code>server/.env</code>
+      (at least 6 characters) and restart the server. Until then it stays off, so no one can open it by accident.</p>
+  </section>
+
+  <section id="login" class="card" hidden>
+    <h1>Caregiver dashboard</h1>
+    <p class="sub">This page shows a patient's medication information. Enter the caregiver PIN to continue.</p>
+    <form id="login-form" autocomplete="on">
+      <label for="pin">Caregiver PIN</label>
+      <input id="pin" name="pin" type="password" autocomplete="current-password" required minlength="6">
+      <p id="login-error" class="error" role="alert"></p>
+      <button id="login-button" type="submit">Sign in</button>
+    </form>
+  </section>
+
+  <div id="app" hidden>
+    <header>
+      <div>
+        <h1>Caregiver dashboard</h1>
+        <p class="sub">Medication information for the person Pam looks after.</p>
+      </div>
+      <button id="logout" class="quiet" type="button">Sign out</button>
+    </header>
+
+    <section class="card">
+      <h2>System</h2>
+      <p class="sub">Which parts of Pam are switched on right now.</p>
+      <div class="grid" id="tiles" aria-live="polite"></div>
+    </section>
+
+    <section class="card soon"><h2>Medication schedule</h2>
+      <p class="sub">Coming next: write the instructions in plain words, check what Pam understood, then save.</p></section>
+    <section class="card soon"><h2>Adherence</h2>
+      <p class="sub">Coming soon: today's doses, confirmations, and the streak.</p></section>
+    <section class="card soon"><h2>Trends</h2>
+      <p class="sub">Coming later: how things change over weeks. These are signals to talk through with the doctor, not a diagnosis.</p></section>
+  </div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const show = (which) => { for (const id of ["loading", "off", "login", "app"]) $(id).hidden = id !== which; };
+
+async function api(path, options) {
+  const res = await fetch(path, { credentials: "same-origin", ...options });
+  let body = {};
+  try { body = await res.json(); } catch { /* an empty body is fine */ }
+  return { status: res.status, ok: res.ok, body };
+}
+
+async function route() {
+  const me = await api("/api/caregiver/me");
+  if (!me.ok || !me.body.enabled) return show("off");
+  if (!me.body.authenticated) { show("login"); $("pin").focus(); return; }
+  show("app");
+  await loadStatus();
+}
+
+async function loadStatus() {
+  const r = await api("/api/caregiver/status");
+  if (r.status === 401) return route();            // the session ended
+  const on = (yes) => `<span class="${yes ? "on" : "off"}">${yes ? "On" : "Off"}</span>`;
+  const tile = (label, value) => `<div class="tile"><div class="label">${label}</div><div class="value">${value}</div></div>`;
+  $("tiles").innerHTML = [
+    tile("Medication check", on(r.body.medication_check)),
+    tile("Demo timings", r.body.demo_timings ? '<span class="off">Fast (demo)</span>' : '<span class="on">Normal</span>'),
+    tile("Search index", r.body.elasticsearch ? '<span class="on">Connected</span>' : '<span class="off">Not set up</span>'),
+  ].join("");
+}
+
+$("login-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  $("login-error").textContent = "";
+  $("login-button").disabled = true;
+  const r = await api("/api/caregiver/login", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ pin: $("pin").value }),
+  });
+  $("login-button").disabled = false;
+  $("pin").value = "";                              // do not leave the PIN sitting in the field
+  if (r.ok) return route();
+  $("login-error").textContent = r.status === 429
+    ? `Too many tries. Please wait about ${Math.ceil((r.body.retry_after_s || 300) / 60)} minutes.`
+    : "That PIN isn't right.";
+  $("pin").focus();
+});
+
+$("logout").addEventListener("click", async () => { await api("/api/caregiver/logout", { method: "POST" }); route(); });
+
+route();
+</script>
+</body>
+</html>

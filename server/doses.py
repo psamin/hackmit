@@ -32,8 +32,8 @@ be audited: due, evidence, asked, confirmed / not_yet, nudge, escalated, expired
 
   1. A `placed` pill-bottle memory (confidence >= 0.4) after the reminder is EVIDENCE.
      Pam asks once, out loud and with a Yes / Not yet card.
-  2. No answer after nudge1_s: ask again. After nudge2_s: offer to call the caregiver (a
-     button; the tap is the consent, nothing dials itself). Then stop. Two prompts, no more.
+  2. No answer after nudge1_s: ask again. After nudge2_s: ask the person to check with
+     their caregiver, without offering a phone action. Then stop. Two prompts, no more.
   3. After expire_s the dose is closed and Pam goes quiet about it.
 
 plan() is a pure function of (doses, reminders, memories, now), so every branch is tested
@@ -229,13 +229,10 @@ def ask_messages(d: Dose, cg: dict, saw_bottle: bool) -> list[dict]:
 
 
 def escalate_messages(d: Dose, cg: dict) -> list[dict]:
-    say = (f"I still don't have a record of your pills. Please check with {cg['name']}. "
-           f"I can call {cg['name']} for you. Tap the button on your screen.")
-    card = {"title": f"Call {cg['name']}?",
+    say = f"I still don't have a record of your pills. Please check with {cg['name']} before taking any pills."
+    card = {"title": f"Please check with {cg['name']}",
             "body": f"I don't have a record that you took your pills. {cg['name']} can help you check.",
             "action2": _answer_actions(d.id)["action"]}
-    if cg.get("phone"):
-        card["action"] = {"label": f"Call {cg['name']}", "href": f"tel:{cg['phone']}"}
     return [{"type": "speak", "text": say}, {"type": "card", "card": card}]
 
 
@@ -320,8 +317,6 @@ OFF_ANSWER = "I can't check that right now. Please ask {name} about your pills."
 
 def _off(cg: dict) -> dict:
     card = {"title": "Your pills", "body": OFF_ANSWER.format(name=cg["name"])}
-    if cg.get("phone"):
-        card["action"] = {"label": f"Call {cg['name']}", "href": f"tel:{cg['phone']}"}
     return {"say": OFF_ANSWER.format(name=cg["name"]), "card": card, "enabled": False}
 
 
@@ -350,8 +345,6 @@ def status(doses: dict[int, Dose], now: float, cg: dict | None = None) -> dict:
     say = (f"I don't have a record that you took your pills. {middle} I can't see inside the bottle. "
            f"Please check with {cg['name']} or your pill organiser before taking any pills.")
     card = {"title": "Your pills", "body": say}
-    if cg.get("phone"):
-        card["action"] = {"label": f"Call {cg['name']}", "href": f"tel:{cg['phone']}"}
     return {"say": say, "card": card, "recorded": False}
 
 

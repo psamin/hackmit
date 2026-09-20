@@ -142,14 +142,17 @@ class Ladder(unittest.TestCase):
         self.assertIn("I haven't recorded your pills yet", spoken(r))
         self.assertNotIn("I saw", spoken(r))
 
-    def test_second_step_offers_the_caregiver_with_a_call_button(self):
+    def test_second_step_keeps_caregiver_support_without_calling(self):
         ev = self.logged({"type": "due", "dose": 1, "text": "pills", "due_ts": DUE},
                          {"type": "nudge", "dose": 1, "n": 1}, at=DUE + T.nudge1_s)
         r = run(ev, [REMINDER], [], DUE + T.nudge2_s)
         self.assertEqual(kinds(r), ["escalated"])
         card = next(m["card"] for _, msgs in r for m in msgs if m["type"] == "card")
-        self.assertEqual(card["action"], {"label": "Call Mike", "href": "tel:+15557654321"})  # a tap, never auto
-        self.assertIn("I can call Mike", spoken(r))
+        self.assertEqual(card["action2"]["post"], "/api/dose/confirm")  # a tap, never auto
+        self.assertNotIn("action", card)
+        self.assertNotIn("href", json.dumps(card))
+        self.assertIn("Please check with Mike", spoken(r))
+        self.assertNotIn("call", spoken(r))
 
     def test_no_phone_number_means_no_call_button_not_a_broken_one(self):
         r = d.escalate_messages(d.Dose(1, "pills", DUE), {"name": "your caregiver", "phone": None})
@@ -213,7 +216,10 @@ class Answers(Isolated):
         self.assertIn("I haven't seen your pill bottle move, but I can't see everything", say)
 
     def test_unrecorded_answer_offers_the_caregiver(self):
-        self.assertEqual(d.status({}, DUE, CG)["card"]["action"]["href"], "tel:+15557654321")
+        result = d.status({}, DUE, CG)
+        self.assertIn("Please check with Mike", result["say"])
+        self.assertNotIn("action", result["card"])
+        self.assertNotIn("href", json.dumps(d._off(CG)))
 
 
 class Safety(Isolated):
