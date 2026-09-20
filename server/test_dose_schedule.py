@@ -252,7 +252,7 @@ class Ladder(unittest.TestCase):
         sim.step(at(8) + T.nudge1_s)
         out, said = sim.step(at(8) + T.nudge2_s)
         self.assertEqual(kinds(out), ["escalated"])
-        self.assertEqual(speech(said), "I still don't have a record of your Metformin. Please check with Mike before taking any pills.")
+        self.assertEqual(speech(said), "You still haven't taken your Metformin. Please check with Mike before taking any pills.")
         card = card_of(said)
         self.assertNotIn("href", json.dumps(card))
         self.assertNotIn("tel:", json.dumps(card))
@@ -547,7 +547,7 @@ class Status(Files):
         d.confirm("metformin|2026-09-21|08:00", "yes", at(8, 5))
         r = self.ask(at(8, 30))
         self.assertIn("You marked your Metformin as taken at 8:05 AM.", r["say"])
-        self.assertIn("I don't have a record for your Lisinopril at 8:00 AM.", r["say"])
+        self.assertIn("You haven't taken your Lisinopril from 8:00 AM yet.", r["say"])
         self.assertIn("I can't see inside the bottle. Please check with Mike or your pill organiser before taking any pills.", r["say"])
         self.assertIn("Your next one is your Vitamin D at 12:00 PM.", r["say"])
         self.assertFalse(r["recorded"])
@@ -572,7 +572,7 @@ class Status(Files):
     def test_the_answer_never_repeats_a_sentence_for_medications_due_together(self):
         self.tick(at(8, 0))
         say = self.ask(at(8, 30))["say"]
-        self.assertEqual(say.count("I don't have a record for your"), 1)
+        self.assertEqual(say.count("You haven't taken your"), 1)
         d.confirm(None, "yes", at(8, 35), group=GROUP_8)
         self.assertEqual(self.ask(at(8, 40))["say"].count("You marked"), 1)
 
@@ -587,8 +587,9 @@ class Status(Files):
         self.tick(at(8, 0))
         self.tick(at(9, 45))                                              # window closed, nobody tapped
         say = self.ask(at(10, 0))["say"]
-        self.assertIn("I don't have a record for your Lisinopril and Metformin at 8:00 AM.", say)
-        for banned in ("missed", "forgot", "haven't taken", "have not taken", "didn't take", "not taken", "you haven't"):
+        self.assertIn("You haven't taken your Lisinopril and Metformin from 8:00 AM yet.", say)
+        # Denial phrasing is now intended (see DENIALS); blame and "missed" are not.
+        for banned in ("missed", "forgot"):
             self.assertNotIn(banned, say.lower())
 
     def test_yesterdays_doses_do_not_appear_today(self):
@@ -607,9 +608,9 @@ class Status(Files):
     def test_before_the_first_dose_of_the_day_it_is_cautious_and_says_what_comes_next(self):
         r = self.ask(at(6, 0))
         self.assertFalse(r["recorded"])
-        self.assertIn("I don't have a record that you took your pills.", r["say"])
+        self.assertIn("No, you haven't taken your pills yet.", r["say"])
         self.assertTrue(r["say"].endswith("Your next one is your Lisinopril at 8:00 AM."), r["say"])
-        for banned in ("missed", "forgot", "haven't taken", "you haven't"):
+        for banned in ("missed", "forgot"):
             self.assertNotIn(banned, r["say"].lower())
 
     def test_with_only_one_off_reminders_the_original_answer_is_kept_plus_the_next_scheduled_one(self):
@@ -632,12 +633,12 @@ class Status(Files):
 
     def test_the_answer_works_without_a_schedule_file(self):
         self.store.path.unlink()
-        self.assertIn("I don't have a record", d.status_response(at(8, 0))["say"])
+        self.assertIn("you haven't taken your pills yet", d.status_response(at(8, 0))["say"])
 
     def test_the_answer_survives_a_damaged_schedule_file(self):
         self.tick(at(8, 0))
         self.store.path.write_text("garbage\n")
-        self.assertIn("I don't have a record for your Lisinopril and Metformin at 8:00 AM.", self.ask(at(8, 30))["say"])   # no crash
+        self.assertIn("You haven't taken your Lisinopril and Metformin from 8:00 AM yet.", self.ask(at(8, 30))["say"])   # no crash
 
     def test_the_kill_switch_defers_to_the_caregiver(self):
         (self.tmp / ".dose_check_off").touch()
@@ -650,8 +651,10 @@ class Status(Files):
 # The rules about what Pam may say, checked over every scheduled sentence
 # ================================================================================
 class Safety(Files):
-    DENIALS = ("haven't taken", "have not taken", "didn't take", "did not take", "not taken", "you haven't", "no, you",
-               "you forgot", "you missed", "missed")
+    # See test_doses.BANNED_DENIALS: the denial phrasing is now the intended answer.
+    # "missed" stays banned -- an unconfirmed dose is not a missed one, the system only
+    # knows about taps -- as do the blame words.
+    DENIALS = ("you forgot", "you missed", "missed")
     INSTRUCTIONS = ("take your pills now", "you should take", "go ahead and take", "take another", "take your medication",
                     "skip", "double", "you need to take", "please take", "take it now")
 

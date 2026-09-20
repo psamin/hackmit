@@ -14,12 +14,19 @@ seeing that nobody did (the pills may come from a pillbox; the detector may have
 So the camera only ever *prompts a question*. A dose counts as taken only when the person,
 or their caregiver, taps "Yes, I took them". Nothing here decides that on the camera's word.
 
-The dangerous case is a memory-impaired user asking "did I take my pills?" and being told
-"no". That answer can cause a second dose. So Pam never says the user has NOT taken them:
+Pam answers the question plainly. Until a dose is confirmed the answer is "no, not yet":
 
     recorded    "You marked your pills as taken at 8:05 AM."
-    unrecorded  "I don't have a record that you took your pills. I can't see inside the bottle.
-                 Please check with Mike or your pill organiser before taking any pills."
+    unrecorded  "No, you haven't taken your pills yet. ... Please check with Mike or your
+                 pill organiser before taking any."
+
+This was a deliberate product decision, taken over the earlier wording ("I don't have a
+record that you took your pills"), which tested as vague to the person it is for. Know
+what it costs: the state tracked here is a RECORD, not the inside of the bottle, so a
+person who took their pills without tapping will be told "no". For a memory-impaired user
+that can prompt a second dose, which is why every unconfirmed answer still ends by
+referring them to their caregiver or pill organiser before taking anything. Do not remove
+that sentence -- it is the only thing standing between a clear answer and a double dose.
 
 For the same reason no prompt ever tells the user to take a pill. Prompts ask a question
 and, in the same breath, say to check with the caregiver if unsure.
@@ -283,9 +290,9 @@ def ask_messages(d: Dose, cg: dict, saw_bottle: bool) -> list[dict]:
 
 
 def escalate_messages(d: Dose, cg: dict) -> list[dict]:
-    say = f"I still don't have a record of your pills. Please check with {cg['name']} before taking any pills."
+    say = f"You still haven't taken your pills. Please check with {cg['name']} before taking any pills."
     card = {"title": f"Please check with {cg['name']}",
-            "body": f"I don't have a record that you took your pills. {cg['name']} can help you check.",
+            "body": f"You haven't taken your pills yet. {cg['name']} can help you check.",
             "action2": _answer_actions(d.id)["action"]}
     return [{"type": "speak", "text": say}, {"type": "card", "card": card}]
 
@@ -331,9 +338,9 @@ def ask_group_messages(members: list[Dose], cg: dict, saw_bottle: bool) -> list[
 
 
 def escalate_group_messages(members: list[Dose], cg: dict) -> list[dict]:
-    say = f"I still don't have a record of your {_names(members)}. Please check with {cg['name']} before taking any pills."
+    say = f"You still haven't taken your {_names(members)}. Please check with {cg['name']} before taking any pills."
     card = {"title": f"Please check with {cg['name']}",
-            "body": f"I don't have a record that you took your {_names(members)}. {cg['name']} can help you check.",
+            "body": f"You haven't taken your {_names(members)} yet. {cg['name']} can help you check.",
             "action2": _group_actions(members[0].group, len(members))["action"]}
     return [{"type": "speak", "text": say}, {"type": "card", "card": card}]
 
@@ -610,7 +617,7 @@ def _scheduled_status(today: list[Dose], scheduled: list[Dose], cg: dict, upcomi
         if waiting:
             waiting_groups.setdefault(waiting, []).append(name)
     parts = [f"You marked your {_list(names)} as taken at {_times(list(stamps))}." for stamps, names in taken_groups.items()]
-    parts += [f"I don't have a record for your {_list(names)} at {_times(list(stamps))}." for stamps, names in waiting_groups.items()]
+    parts += [f"You haven't taken your {_list(names)} from {_times(list(stamps))} yet." for stamps, names in waiting_groups.items()]
     any_taken, unrecorded = bool(taken_groups), bool(waiting_groups)
     extra = [d.confirmed_ts for d in today if d.source == "reminder" and d.confirmed_ts]
     if extra:
@@ -643,7 +650,7 @@ def status(doses: dict, now: float, cg: dict | None = None, upcoming: list | Non
         middle = f"I did see your pill bottle move at {at}, but I can't tell whether you took any."
     else:
         middle = "I haven't seen your pill bottle move, but I can't see everything."
-    say = (f"I don't have a record that you took your pills. {middle} I can't see inside the bottle. "
+    say = (f"No, you haven't taken your pills yet. {middle} I can't see inside the bottle. "
            f"Please check with {cg['name']} or your pill organiser before taking any pills." + _next_line(upcoming))
     card = {"title": "Your pills", "body": say}
     return {"say": say, "card": card, "recorded": False}

@@ -976,10 +976,11 @@ async def open_camera_relay():
 async def camera_stream(ws: WebSocket):
     origin = ws.headers.get("origin")
     if origin and urlsplit(origin).netloc != ws.headers.get("host"):
-        print(f"Camera origin mismatch: origin={urlsplit(origin).netloc!r}, host={ws.headers.get('host')!r}", flush=True)
+        log("CAMERA", f"origin mismatch: origin={urlsplit(origin).netloc!r} host={ws.headers.get('host')!r} "
+                      f"-- open the laptop's own address, not an IDE preview proxy")
         await ws.accept()
         await ws.send_json({"type": "camera_error", "retry": False,
-                            "message": "This page's address is blocking the camera connection. Open Pam directly at http://127.0.0.1:8000/ on your laptop, or the laptop's HTTPS address on your phone, not the IDE preview."})
+                            "message": "Pam can't use the camera from this page. Ask your helper to open Pam's usual address."})
         await ws.close(code=1008)
         return
     await ws.accept()
@@ -1011,10 +1012,12 @@ async def camera_stream(ws: WebSocket):
             task.result()
     except ssl.SSLCertVerificationError:
         with suppress(RuntimeError, WebSocketDisconnect):
-            await ws.send_json({"type": "camera_error", "message": "The camera relay certificate does not match Pam's certificate. Ask your helper to restart the pipeline with phone/cert.pem."})
+            log("CAMERA", "relay TLS mismatch: restart memory_pipeline with --cert phone/cert.pem --key phone/key.pem")
+            await ws.send_json({"type": "camera_error", "message": "Pam can't reach the camera service. Ask your helper to check the laptop."})
     except (OSError, TimeoutError, ValueError, ConnectionClosed, InvalidHandshake):
         with suppress(RuntimeError, WebSocketDisconnect):
-            await ws.send_json({"type": "camera_error", "message": "Camera is on, but the memory pipeline is unavailable. Ask your helper to start the pipeline on the laptop. Pam will retry automatically."})
+            log("CAMERA", "relay unreachable on 8765: is memory_pipeline running with --source wss://0.0.0.0:8765 ?")
+            await ws.send_json({"type": "camera_error", "message": "Your camera is on, but Pam isn't receiving it yet. Ask your helper to check the laptop. Pam will keep trying."})
     except WebSocketDisconnect:
         pass
     finally:

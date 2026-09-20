@@ -206,7 +206,7 @@ class Answers(Isolated):
     def test_unrecorded_with_evidence_says_what_was_seen_and_what_was_not(self):
         ev = {"logged_at": mem(3)["logged_at"], "confidence": 0.9, "frame": None, "simulated": False}
         say = d.status({1: self.dose(evidence=ev)}, DUE + 600, CG)["say"]
-        self.assertIn("I don't have a record that you took your pills", say)
+        self.assertIn("No, you haven't taken your pills yet", say)
         self.assertIn("I did see your pill bottle move at 8:03 AM, but I can't tell whether you took any", say)
         self.assertIn("I can't see inside the bottle", say)
         self.assertIn("check with Mike or your pill organiser before taking any pills", say)
@@ -225,8 +225,15 @@ class Answers(Isolated):
 class Safety(Isolated):
     """The rules that exist because a wrong answer here can cause a second dose."""
 
-    BANNED_DENIALS = ("haven't taken", "have not taken", "didn't take", "did not take", "not taken",
-                      "you haven't", "no, you", "you forgot", "you missed")
+    # The denial phrases used to be banned here: Pam answered "I don't have a record"
+    # rather than "no". That was reversed as a product decision -- the hedge tested as
+    # vague to the person it is for -- so a plain "no, you haven't taken your pills yet"
+    # is now the intended answer and this list no longer bans it.
+    #
+    # What the denial ban was PROTECTING against has not gone away: a memory-impaired
+    # user told "no" may take a second dose. That risk is now carried entirely by the
+    # caregiver referral, which is why it is asserted separately and must not be dropped.
+    BANNED_DENIALS = ("you forgot", "you missed")
     BANNED_INSTRUCTIONS = ("take your pills now", "you should take", "go ahead and take", "take another",
                            "take your medication", "skip", "double")
 
