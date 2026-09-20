@@ -1,0 +1,36 @@
+{
+  "patient_name": "Alex (example, not a real patient)",
+  "medications": [
+    {
+      "name": "Blood pressure pill",
+      "times": ["08:00"],
+      "note": "With breakfast."
+    },
+    {
+      "name": "Diabetes pill",
+      "times": ["08:00", "18:00"],
+      "late_minutes": 120,
+      "note": "With food."
+    },
+    {
+      "name": "Vitamin D",
+      "times": ["12:00"],
+      "days": ["mon", "wed", "fri"]
+    },
+    {
+      "name": "Antibiotic course",
+      "times": ["09:00", "21:00"],
+      "start_date": "2026-09-21",
+      "end_date": "2026-09-28",
+      "min_gap_hours": 10,
+      "max_per_day": 2,
+      "note": "Finish the whole course."
+    },
+    {
+      "name": "Pain relief",
+      "as_needed": true,
+      "max_per_day": 3,
+      "note": "Only if needed."
+    }
+  ]
+}
