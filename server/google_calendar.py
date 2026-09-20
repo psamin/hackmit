@@ -47,33 +47,6 @@ def install_log_filter():
         logger.addFilter(RedactCalendarCallback())
 
 
-def start_setup(open_browser=None, announce=print):
-    """At startup: connect once, then Pam keeps working from the stored refresh token.
-
-    Returns True when a consent page was opened. Never raises: a laptop with no browser,
-    or no OAuth client yet, must still start Pam with every other capability working."""
-    import webbrowser
-
-    open_browser = open_browser or webbrowser.open
-    service = calendar_service
-    status = service.status()
-    if status["connected"]:
-        announce("  Calendar: Google Calendar connected (read-only).")
-        return False
-    if not status["configured"]:
-        announce("  Calendar: not connected. Add GOOGLE_CALENDAR_CLIENT_ID and GOOGLE_CALENDAR_CLIENT_SECRET to")
-        announce(f"            server/.env, with redirect URI {REDIRECT_URI} , then restart.")
-        return False
-    url = f"http://127.0.0.1:8000{CONNECT_PATH}"
-    try:  # webbrowser.open returns False when it cannot launch; openers that return None did open one
-        opened = open_browser(url) is not False
-    except Exception:
-        opened = False
-    announce(f"  Calendar: opening Google sign-in in your browser. Approve it once." if opened
-             else f"  Calendar: open {url} on this laptop to finish Google sign-in once.")
-    return opened
-
-
 def local_setup_request(request):
     try:
         loopback = ipaddress.ip_address(request.client.host).is_loopback
@@ -141,6 +114,11 @@ class CalendarService:
             self.credentials = Credentials.from_authorized_user_info(payload, scopes=SCOPES)
         except (OSError, ValueError, KeyError):
             self.credentials = None
+
+    def reset(self):
+        """Re-read the client from the environment: setup.py can change it without a restart."""
+        self.loaded, self.credentials = False, None
+        self.pending.clear()
 
     def status(self):
         self.load()
