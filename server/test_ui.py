@@ -646,12 +646,13 @@ class BrowserTests(unittest.TestCase):
 
         page.route("**/api/**", respond)
         page.goto(f"{self.base}/?demo=1")
-        self.assertEqual(page.locator("#demo button").count(), 12)
+        expected = {function["name"] for function in app.FUNCTIONS}
+        self.assertEqual(set(page.locator("#demo button").all_text_contents()), expected)
         for button in page.locator("#demo button").all():
             count = page.locator("#log > div").count()
             button.click()
             page.wait_for_function("count => document.querySelectorAll('#log > div').length === count + 1", arg=count)
-        self.assertEqual(page.locator("#log > div").count(), 12)
+        self.assertEqual(page.locator("#log > div").count(), len(expected))
         self.assertEqual(page.locator("#photo img").get_attribute("alt"), "Sarah, your granddaughter")
 
     def test_memory_file_to_sse_note_and_reduced_motion(self):
