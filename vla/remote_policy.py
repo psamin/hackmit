@@ -42,6 +42,11 @@ class RemotePolicyModuleConfig(ModuleConfig):
     max_observation_age_s: float = Field(default=0.5, gt=0)
     request_timeout_s: float = Field(default=5.0, gt=0)
     jpeg_quality: int = Field(default=85, ge=10, le=100)
+    # ACT predicts a whole chunk, and running one to its last action leaves the arm holding that pose while the next
+    # prediction is fetched, then starting somewhere the old chunk was not heading. Both show up as a jerk every few
+    # seconds. Re-predict partway through instead, and cross-fade the seam.
+    exec_fraction: float = Field(default=0.6, gt=0.05, le=1.0)  # how much of a chunk to run before re-predicting
+    blend_steps: int = Field(default=10, ge=0)  # actions over which a new chunk fades in over the old one
 
 
 class RemotePolicyModule(Module):
@@ -62,6 +67,7 @@ class RemotePolicyModule(Module):
         self._stop_event = Event()
         self._thread: Thread | None = None
         self._chunks_accepted = 0
+        self._pending_tail: np.ndarray | None = None
         self._last_error: str | None = None
         self._active = False
 
@@ -205,6 +211,7 @@ class RemotePolicyModule(Module):
             if info is None:
                 raise RuntimeError("policy preflight has not passed")
             self._request("POST", "/reset", {})
+            self._pending_tail = None
             steps, width = info["n_action_steps"], len(self.config.joint_names)
             while not self._stop_event.is_set():
                 with self._lock:
@@ -215,6 +222,13 @@ class RemotePolicyModule(Module):
                 if not np.all(np.isfinite(actions)):
                     raise RuntimeError("policy returned non-finite joint targets")
                 bounded = np.clip(actions, info["action_min"], info["action_max"])
+                # Fade the new chunk in over the tail of the one still running, so the seam is a ramp not a step.
+                tail = self._pending_tail
+                if tail is not None and self.config.blend_steps:
+                    n = min(self.config.blend_steps, len(tail), len(bounded))
+                    if n:
+                        ramp = np.linspace(0.0, 1.0, n, dtype=np.float32)[:, None]
+                        bounded[:n] = ramp * bounded[:n] + (1.0 - ramp) * tail[:n]
                 clipped = np.any(actions != bounded, axis=0)
                 if np.any(clipped):
                     logger.warning("Clipped policy actions to checkpoint range",
@@ -229,7 +243,9 @@ class RemotePolicyModule(Module):
                     raise RuntimeError(result.message or f"trajectory rejected: {result.status.name}")
                 with self._lock:
                     self._chunks_accepted += 1
-                self._stop_event.wait(steps / self.config.fps)
+                run_steps = max(1, int(steps * self.config.exec_fraction))
+                self._pending_tail = bounded[run_steps:]  # what the arm would have done had it kept going
+                self._stop_event.wait(run_steps / self.config.fps)
         except Exception as exc:
             with self._lock:
                 self._last_error = str(exc)
