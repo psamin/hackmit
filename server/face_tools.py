@@ -80,28 +80,64 @@ def save_face(name: str, frame):
         return {"ok": False, "say": f"I couldn't get a clear enough look - {msg}. "
                                     f"Can they face the camera a little closer?"}
     n = len(gallery[name])
-    return {"ok": True, "name": name, "embeddings": n,
+    # Local file first, then mirror: the same order vlm.py uses for memories, for the
+    # same reason. A cluster that is down must not be able to lose a person.
+    import es_faces
+    from datetime import datetime
+    mirrored = es_faces.upsert(name, gallery[name][-1], datetime.now().isoformat(timespec="seconds"))
+    return {"ok": True, "name": name, "embeddings": n, "mirrored": mirrored,
             "say": f"Got it, I'll remember {name}." if n == 1
                    else f"Thanks, that's another look at {name} - I'll recognise them better now."}
+
+
+def _match(vec, gallery, es_faces):
+    """(name|None, best cosine, runner-up cosine).
+
+    Elasticsearch first, local gallery when it is unreachable. Both paths end in the
+    SAME threshold test, on true cosine, so the answer cannot depend on which store
+    replied -- and either can answer "nobody", which is a real answer, not a failure.
+    """
+    import faces
+
+    hits = es_faces.search(vec, k=5)
+    if hits is None:                       # ES down or unconfigured
+        return faces.identify(vec, gallery)
+    if not hits:
+        return None, 0.0, 0.0
+    # Several embeddings per person: take each person's best, exactly as the local
+    # path does with max() rather than a mean.
+    per_person = {}
+    for name, cos in hits:
+        per_person[name] = max(per_person.get(name, -1.0), cos)
+    ranked = sorted(((c, n) for n, c in per_person.items()), reverse=True)
+    best, name = ranked[0]
+    second = ranked[1][0] if len(ranked) > 1 else 0.0
+    if best < faces.MATCH_THR or (best - second) < faces.MARGIN:
+        return None, best, second
+    return name, best, second
 
 
 def who_is_this(frame):
     """Identify every usable face in view."""
     import faces
 
+    import es_faces
+
     gallery = faces.load()
-    if not gallery:
+    es_people = es_faces.people()
+    if not gallery and not es_people:
         return {"ok": False, "say": "I don't know anyone yet. Tell me a name and I'll remember them."}
     found = faces.faces_in(frame)
     if not found:
         return {"ok": False, "say": "I can't see anyone's face at the moment."}
 
-    people, unknown, skipped = [], 0, 0
+    people, unknown, skipped, source = [], 0, 0, "local"
     for f in found:
         if f["reject"]:
             skipped += 1
             continue
-        who, best, second = faces.identify(f["vec"], gallery)
+        who, best, second = _match(f["vec"], gallery, es_faces)
+        source = "elasticsearch" if es_people is not None else "local"
         if who:
             people.append({"name": who, "similarity": round(best, 3)})
         else:
@@ -117,11 +153,13 @@ def who_is_this(frame):
     names = [p["name"] for p in people]
     said = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
     extra = f" There's also someone I don't recognise." if unknown else ""
-    return {"ok": True, "people": people, "unknown": unknown,
+    return {"ok": True, "people": people, "unknown": unknown, "source": source,
             "say": f"That's {said}.{extra}"}
 
 
 def known_people():
+    import es_faces
     import faces
 
-    return {name: len(v) for name, v in faces.load().items()}
+    local = {name: len(v) for name, v in faces.load().items()}
+    return {"local": local, "elasticsearch": es_faces.people()}
