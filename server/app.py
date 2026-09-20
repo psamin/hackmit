@@ -91,7 +91,7 @@ AGENT_ROUTES = {
     "/api/reminders": "get_reminders/set_reminder", "/api/weather": "get_weather",
     "/api/photo-info": "show_photo", "/api/ride": "request_ride",
     "/api/flights": "search_flights", "/api/fetch": "fetch_object",
-    "/api/time-and-place": "get_time_and_place", "/api/pill-status": "check_pills_taken",
+    "/api/time-and-place": "get_time_and_place", "/api/pill-status": "check_pills_taken", "/api/streak": "check_streak",
 }
 QUIET = {"/api/push", "/api/dg-token", "/api/agent-config", "/api/health"}
 
@@ -184,6 +184,8 @@ Actions:
 """
 if doses.env_enabled():
     SYSTEM_PROMPT += doses.PROMPT_RULE
+if doses.env_enabled() and doses.streak_visible():   # PAM_STREAK=off keeps Pam from ever mentioning it
+    SYSTEM_PROMPT += doses.STREAK_RULE
 
 
 def fn(name, description, params=None, defer=False):
@@ -224,6 +226,8 @@ FUNCTIONS = [
 ]
 if doses.env_enabled():  # with PAM_DOSE_CHECK=off Pam is never told this function exists
     FUNCTIONS.append(fn("check_pills_taken", doses.FUNCTION_DESCRIPTION))
+if doses.env_enabled() and doses.streak_visible():
+    FUNCTIONS.append(fn("check_streak", doses.STREAK_FUNCTION_DESCRIPTION))
 
 
 @app.get("/api/agent-config")
@@ -777,6 +781,12 @@ async def time_and_place_endpoint():
 async def pill_status():
     """"Did I take my pills?" Answers from a person's tap only; see server/doses.py."""
     return doses.status_response()
+
+
+@app.get("/api/streak")
+async def streak():
+    """"How am I doing?" The days-in-a-row count, in words that never blame; see server/adherence.py."""
+    return doses.streak_response()
 
 
 @app.post("/api/dose/confirm")

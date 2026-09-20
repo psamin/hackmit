@@ -460,6 +460,7 @@ class Confirming(Files):
         self.open(MET, LIS)
         r = d.confirm(None, "yes", at(8, 5), group=GROUP_8)
         self.assertEqual((r["ok"], r["recorded"]), (True, True))
+        # no streak line: Metformin's 6 PM dose is still to come, so today is not finished
         self.assertEqual(r["say"], "Thank you. I've noted that you took your Lisinopril and Metformin at 8:05 AM.")
         confirmed = [e for e in self.events() if e["type"] == "confirmed"]
         self.assertEqual(len(confirmed), 1)
@@ -487,23 +488,41 @@ class Confirming(Files):
         self.assertIsNotNone(doses["metformin|2026-09-21|08:00"].confirmed_ts)
         self.assertIsNone(doses["lisinopril|2026-09-21|08:00"].confirmed_ts)
 
-    def test_a_tap_after_the_window_does_not_count_and_says_so(self):
+    def test_a_tap_after_the_window_is_recorded_as_late_not_as_on_time(self):
         self.open()
         r = d.confirm(None, "yes", at(9, 45), group=GROUP_8)                   # the window closed at 9:30
+        self.assertEqual((r["ok"], r["recorded"]), (True, True))
+        self.assertEqual(r["say"], "Thank you. I've noted that you took your Metformin at 9:45 AM.")   # nothing about it being late
+        dose = d.replay(self.events())["metformin|2026-09-21|08:00"]
+        self.assertEqual((dose.confirmed_ts, dose.late_ts), (None, at(9, 45)))
+        kinds_ = [e["type"] for e in self.events()]
+        self.assertIn("confirmed_late", kinds_)
+        self.assertNotIn("confirmed", kinds_)
+
+    def test_a_tap_far_too_late_is_refused_and_writes_nothing(self):
+        import adherence
+        self.open()
+        r = d.confirm(None, "yes", at(9, 30) + adherence.LATE_TAP_GRACE_S + 1, group=GROUP_8)
         self.assertFalse(r["ok"])
         self.assertIn("That reminder has passed. Please check with Mike about your Metformin.", r["say"])
-        self.assertNotIn("confirmed", [e["type"] for e in self.events()])
+        self.assertNotIn("confirmed_late", [e["type"] for e in self.events()])
+
+    def test_the_last_moment_of_the_late_period_still_counts_as_a_late_tap(self):
+        import adherence
+        self.open()
+        self.assertTrue(d.confirm(None, "yes", at(9, 30) + adherence.LATE_TAP_GRACE_S, group=GROUP_8)["ok"])
 
     def test_a_tap_on_the_last_minute_of_the_window_counts(self):
         self.open()
         self.assertTrue(d.confirm(None, "yes", at(9, 30), group=GROUP_8)["ok"])
 
-    def test_only_the_doses_still_in_their_window_are_confirmed(self):
+    def test_in_one_group_each_dose_is_on_time_or_late_by_its_own_window(self):
         self.open({**MET, "times": ["08:00"], "late_minutes": 120}, {**LIS, "late_minutes": 60})
         r = d.confirm(None, "yes", at(9, 30), group=GROUP_8)                   # Lisinopril closed at 9:00, Metformin at 10:00
-        self.assertEqual(r["say"], "Thank you. I've noted that you took your Metformin at 9:30 AM.")
+        self.assertEqual(r["say"], "Thank you. I've noted that you took your Lisinopril and Metformin at 9:30 AM.")
         doses = d.replay(self.events())
-        self.assertIsNone(doses["lisinopril|2026-09-21|08:00"].confirmed_ts)
+        self.assertEqual((doses["metformin|2026-09-21|08:00"].confirmed_ts, doses["metformin|2026-09-21|08:00"].late_ts), (at(9, 30), None))
+        self.assertEqual((doses["lisinopril|2026-09-21|08:00"].confirmed_ts, doses["lisinopril|2026-09-21|08:00"].late_ts), (None, at(9, 30)))
 
     def test_an_unknown_group_or_dose_is_refused_and_writes_nothing(self):
         self.open()

@@ -7,3 +7,6 @@ medications.jsonl
 
 # Turns off only the schedule-driven reminders (server/doses.py); a local switch, never committed.
 .schedule_reminders_off
+
+# Hides the streak from the patient (server/doses.py); a local switch, never committed.
+.streak_off

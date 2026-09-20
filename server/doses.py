@@ -76,6 +76,7 @@ from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+import adherence
 import schedule as sched
 from orientation import clock
 
@@ -83,6 +84,7 @@ HERE = Path(__file__).resolve().parent
 LOG = HERE / "doses.jsonl"
 KILL_FILE = HERE / ".dose_check_off"
 SCHEDULE_KILL_FILE = HERE / ".schedule_reminders_off"
+STREAK_KILL_FILE = HERE / ".streak_off"
 CONTACTS = HERE / "contacts.json"
 
 MEDICATION = re.compile(r"\b(medic\w*|meds?|pills?|tablets?|capsules?|prescriptions?|doses?)\b", re.I)
@@ -107,6 +109,13 @@ def schedule_enabled() -> bool:
     """Scheduled reminders on? The whole medication check must be on, and neither schedule switch pulled."""
     off = os.environ.get("PAM_SCHEDULE_REMINDERS", "on").strip().lower() in {"0", "off", "false", "no", "disabled"}
     return enabled() and not off and not SCHEDULE_KILL_FILE.exists()
+
+
+def streak_visible() -> bool:
+    """May Pam show the patient their streak? On by default. `PAM_STREAK=off` or `touch server/.streak_off`
+    hides it from the patient; the caregiver still sees the numbers on the dashboard."""
+    off = os.environ.get("PAM_STREAK", "on").strip().lower() in {"0", "off", "false", "no", "disabled"}
+    return enabled() and not off and not STREAK_KILL_FILE.exists()
 
 
 def demo_mode() -> bool:
@@ -167,7 +176,8 @@ class Dose:
     due_ts: float
     evidence: dict | None = None
     asked: bool = False                  # the "I saw your bottle move, did you take it?" question was asked
-    confirmed_ts: float | None = None
+    confirmed_ts: float | None = None    # tapped ON TIME (inside the window)
+    late_ts: float | None = None         # tapped LATE: recorded, counts as taken, but not toward the streak
     nudges: int = 0
     escalated: bool = False
     expired: bool = False
@@ -185,7 +195,8 @@ class Dose:
 
     @property
     def is_open(self) -> bool:
-        return self.confirmed_ts is None and not self.expired and not self.unconfirmed and not self.skipped
+        return (self.confirmed_ts is None and self.late_ts is None and not self.expired
+                and not self.unconfirmed and not self.skipped)
 
 
 def replay(events: list[dict]) -> dict:
@@ -212,6 +223,8 @@ def replay(events: list[dict]) -> dict:
                 d.asked, d.last_spoken = True, ts
             elif kind == "confirmed":
                 d.confirmed_ts = d.confirmed_ts or ts
+            elif kind == "confirmed_late":
+                d.late_ts = d.late_ts or ts
             elif kind == "nudge":
                 d.nudges, d.last_spoken = max(d.nudges, int(e.get("n", 1))), ts
             elif kind == "escalated":
@@ -360,10 +373,12 @@ def _guard_reason(d: Dose, doses: dict, med, now: float) -> str | None:
     """Why NOT to prompt for this dose: the same medication was taken recently, or its daily maximum is reached."""
     if med is None:
         return None
-    others = [o for o in doses.values() if o is not d and o.med_id == d.med_id and o.confirmed_ts]
-    if med.min_gap_hours and any(0 <= now - o.confirmed_ts < med.min_gap_hours * 3600 for o in others):
+    # A late tap counts as taken here: it is exactly the case where someone already took it.
+    others = [(o, o.confirmed_ts or o.late_ts) for o in doses.values()
+              if o is not d and o.med_id == d.med_id and (o.confirmed_ts or o.late_ts)]
+    if med.min_gap_hours and any(0 <= now - taken < med.min_gap_hours * 3600 for _, taken in others):
         return "taken recently"
-    if med.max_per_day and sum(_same_day(o.confirmed_ts, d.due_ts) for o in others) >= med.max_per_day:
+    if med.max_per_day and sum(_same_day(taken, d.due_ts) for _, taken in others) >= med.max_per_day:
         return "daily maximum reached"
     return None
 
@@ -603,8 +618,8 @@ def _scheduled_status(today: list[Dose], scheduled: list[Dose], cg: dict, upcomi
     taken_groups: dict[tuple, list[str]] = {}
     waiting_groups: dict[tuple, list[str]] = {}
     for name, ds in sorted(by_med.items(), key=lambda kv: min(d.due_ts for d in kv[1])):
-        taken = tuple(sorted(d.confirmed_ts for d in ds if d.confirmed_ts))
-        waiting = tuple(sorted(d.due_ts for d in ds if not d.confirmed_ts))
+        taken = tuple(sorted(d.confirmed_ts or d.late_ts for d in ds if d.confirmed_ts or d.late_ts))
+        waiting = tuple(sorted(d.due_ts for d in ds if not (d.confirmed_ts or d.late_ts)))
         if taken:
             taken_groups.setdefault(taken, []).append(name)
         if waiting:
@@ -680,16 +695,26 @@ def _confirm_group(doses: dict, dose_id, group, answer: str, now: float, cg: dic
         return {"say": f"Okay. If you're not sure, please check with {cg['name']} before taking any.", "ok": True}
     if answer != "yes":
         return {"say": "I didn't understand that answer.", "ok": False}
-    open_now = [d for d in members if d.is_open and (d.closes_ts is None or now <= d.closes_ts)]
-    if open_now:
-        append({"type": "confirmed", "doses": [d.id for d in open_now], "group": members[0].group}, now)
-    done = [d for d in members if d.confirmed_ts] + [d for d in open_now if not d.confirmed_ts]
-    if not done:            # every dose in the group is out of its window, or was not prompted
-        names = _names(members)
-        return {"say": f"That reminder has passed. Please check with {cg['name']} about your {names}.", "ok": False}
-    at = min(d.confirmed_ts or now for d in done)
-    return {"say": f"Thank you. I've noted that you took your {_names(done)} at {clock(datetime.fromtimestamp(at), with_period=True)}.",
-            "ok": True, "recorded": True}
+    on_time = [d for d in members if d.is_open and (d.closes_ts is None or now <= d.closes_ts)]
+    # A tap after the window is still a tap: recorded, and it counts as taken for safety, but it neither adds to
+    # the streak nor erases it. Only for a while: a tap days later would mostly be confusion.
+    late = [d for d in members if d.confirmed_ts is None and d.late_ts is None and not d.skipped and d.closes_ts is not None
+            and d.closes_ts < now <= d.closes_ts + adherence.LATE_TAP_GRACE_S]
+    if on_time:
+        append({"type": "confirmed", "doses": [d.id for d in on_time], "group": members[0].group}, now)
+    if late:
+        append({"type": "confirmed_late", "doses": [d.id for d in late], "group": members[0].group}, now)
+    done = [d for d in members if d.confirmed_ts or d.late_ts] + [d for d in on_time + late if not (d.confirmed_ts or d.late_ts)]
+    if not done:            # every dose in the group is out of time, or was not prompted
+        return {"say": f"That reminder has passed. Please check with {cg['name']} about your {_names(members)}.", "ok": False}
+    done.sort(key=lambda d: (d.due_ts, d.name or ""))
+    at = min(d.confirmed_ts or d.late_ts or now for d in done)
+    say = f"Thank you. I've noted that you took your {_names(done)} at {clock(datetime.fromtimestamp(at), with_period=True)}."
+    if streak_visible():
+        summary = adherence_summary(now)
+        extra = adherence.streak_line(summary) or (adherence.still_line(summary) if late or any(d.late_ts for d in done) else "")
+        say = f"{say} {extra}" if extra else say
+    return {"say": say, "ok": True, "recorded": True}
 
 
 def confirm(dose_id, answer: str, now: float | None = None, *, group: str | None = None) -> dict:
@@ -738,6 +763,25 @@ def simulate_evidence(now: float | None = None) -> dict:
     return {"say": "Simulated: the pill bottle was moved.", "ok": True}
 
 
+def adherence_summary(now: float | None = None) -> "adherence.Summary":
+    """The streak as of `now`, counting this evening's doses (not yet opened) as still to come."""
+    now = time.time() if now is None else now
+    return adherence.summarize(replay(read_events()).values(), now, upcoming=_upcoming(now))
+
+
+def streak_response(now: float | None = None) -> dict:
+    """Pam's answer to "how am I doing?". Off when the medication check is off, or the caregiver hid the streak."""
+    cg = caregiver()
+    if not enabled():
+        return _off(cg)
+    if not streak_visible():
+        say = "I can't share that right now."
+        return {"say": say, "card": {"title": "Your streak", "body": say}, "hidden": True}
+    summary = adherence_summary(now)
+    say = adherence.how_am_i_doing(summary)
+    return {"say": say, "card": {"title": "Your streak", "body": say}, "streak": summary.streak, "best": summary.best}
+
+
 # What Pam is told, when the feature is on. See the module docstring for why.
 FUNCTION_DESCRIPTION = ("Answer whether the user has taken their pills or medication. Use whenever they ask if they "
                         "took, or already took, their pills, medicine or medication. Read the whole result aloud.")
@@ -746,4 +790,13 @@ PROMPT_RULE = """
   Never say that they have, or have not, taken it. When they ask, call check_pills_taken and read its answer
   aloud in full, without softening it or adding to it. Never tell them to take, skip or double a dose; when in
   doubt, send them to their caregiver.
+"""
+
+STREAK_FUNCTION_DESCRIPTION = ("Tell the user how they are doing with their medication: how many days in a row they have marked "
+                               "all of it on time. Use when they ask about their streak, their progress, or how they are doing. "
+                               "Read the whole result aloud.")
+STREAK_RULE = """
+- Streak: when they ask how they are doing, or about their streak, call check_streak and read the answer aloud as
+  written. Never say they failed, missed, forgot, lost or broke anything, never mention late or unrecorded doses, and
+  never compare them with anyone else. If there is no streak yet, be encouraging and say nothing about why.
 """
