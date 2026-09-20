@@ -8,3 +8,4 @@ __pycache__/
 /mobileclip2_*.ts
 server_log.txt
 pipeline_log.txt
+analysis/out/
