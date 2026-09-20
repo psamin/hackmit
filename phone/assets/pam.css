@@ -22,7 +22,9 @@ button, input { font: inherit; color: inherit; }
 button, a.action, summary { cursor: pointer; touch-action: manipulation; }
 button { padding: 0; border: 0; background: none; }
 button:disabled { opacity: .55; cursor: default; }
+button, a.action { transition: transform 160ms cubic-bezier(.23, 1, .32, 1); }
 button:active { transform: scale(.985); }
+#talk:active, #features-open:active, #mic-toggle:active, .chip:active, a.action:active { transform: scale(.97); }
 :focus-visible { outline: 3px solid var(--blue); outline-offset: 4px; }
 [hidden] { display: none !important; }
 h1, h2, h3, p { margin: 0; }
@@ -94,14 +96,15 @@ body:is([data-voice=listening], [data-voice=speaking]) .voice-state { color: var
 #status.error, #cam.err { color: var(--error); }
 
 /* Talk: actions */
-.actions { display: grid; grid-template-columns: 58px minmax(0, 240px); justify-content: center; gap: 10px; padding: 16px 24px 0; border-top: 1px solid var(--line); }
-.actions:has(#mic-toggle:not([hidden])) { grid-template-columns: 58px minmax(0, 240px) auto; }
+/* Three columns always, the outer two equal: Talk sits on the centre line of the
+   screen, and Mute appearing or disappearing never shifts it. */
+.actions { display: grid; grid-template-columns: 78px minmax(0, 240px) 78px; justify-content: center; align-items: center; gap: 12px; padding: 16px 24px 0; border-top: 1px solid var(--line); }
 #talk { min-height: 58px; min-width: 0; padding-inline: 18px; border-radius: 999px; color: var(--on-blue); background: var(--blue); font-size: .95rem; font-weight: 600; }
 #talk:is(.listening, .speaking, :disabled) { background: var(--blue-deep); }
-#features-open { display: grid; align-content: center; justify-items: center; gap: 3px; min-height: 58px; border-radius: 18px; background: var(--paper); color: var(--ink); }
-#features-open span { font-size: .64rem; font-weight: 600; }
-#features-open .icon { width: 21px; height: 21px; }
-#mic-toggle { min-height: 58px; min-width: 58px; padding-inline: 14px; border: 1px solid var(--line); border-radius: 999px; font-size: .8rem; font-weight: 600; }
+#features-open { display: grid; align-content: center; justify-items: center; gap: 4px; width: 100%; min-height: 58px; padding: 6px 4px; border-radius: 18px; background: var(--paper); color: var(--ink); }
+#features-open span { font-size: .74rem; font-weight: 600; line-height: 1; letter-spacing: -.01em; }
+#features-open .icon { width: 22px; height: 22px; }
+#mic-toggle { width: 100%; min-height: 58px; min-width: 0; padding-inline: 8px; border: 1px solid var(--line); border-radius: 999px; font-size: .78rem; font-weight: 600; }
 #mic-toggle[aria-pressed=true] { background: var(--blue-mist); border-color: var(--blue); }
 
 /* Grouped lists (the medical-app row pattern) */
@@ -311,11 +314,10 @@ dialog::backdrop { background: #182e435c; }
   .welcome-copy h2 { font-size: 1.2rem; }
   .welcome-copy p { font-size: .85rem; margin-top: 10px; }
   #subtitle-window { --caption-line: 28px; font-size: 1.1rem; }
-  .actions { grid-template-columns: 54px minmax(0, 1fr); gap: 8px; padding: 12px 14px 0; }
-  .actions:has(#mic-toggle:not([hidden])) { grid-template-columns: 54px minmax(0, 1fr) auto; }
+  .actions { grid-template-columns: 74px minmax(0, 1fr) 74px; gap: 10px; padding: 12px 14px 0; }
   #talk, #features-open, #mic-toggle { min-height: 56px; }
   #talk { padding-inline: 10px; }
-  #mic-toggle { min-width: 54px; padding-inline: 10px; }
+  #mic-toggle { min-width: 0; padding-inline: 6px; }
   #status { margin: 8px 14px 14px; }
   .voice-footer { display: none; }
   #camera-peek { grid-template-columns: 84px minmax(0, 1fr); gap: 12px; }
@@ -365,8 +367,7 @@ dialog::backdrop { background: #182e435c; }
   .welcome-copy h2 { font-size: 1rem; }
   .welcome-copy p { display: none; }
   .welcome-scene img { max-height: 104px; }
-  .actions { padding-top: 8px; grid-template-columns: 48px minmax(0, 240px); }
-  .actions:has(#mic-toggle:not([hidden])) { grid-template-columns: 48px minmax(0, 240px) auto; }
+  .actions { padding-top: 8px; grid-template-columns: 70px minmax(0, 240px) 70px; gap: 8px; }
   #talk, #mic-toggle, #features-open { min-height: 44px; }
   #status { margin: 5px 12px 8px; font-size: .7rem; }
 }
@@ -395,5 +396,5 @@ html[data-large=true] { font-size: 23px; }
 html[data-large=true] #subtitle-window { --caption-line: 34px; font-size: 23px; }
 html[data-contrast=true] { --ink: #071626; --slate: #263e52; --line: #6f8090; --blue: #124a88; --blue-deep: #0d3a6b; --blue-text: #0d3a6b; }
 html[data-effects=off] *, html[data-effects=off] *::before, html[data-effects=off] *::after { animation: none !important; transition: none !important; }
-@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } button:active { transform: none; } }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } button:active, #talk:active, #features-open:active, #mic-toggle:active, .chip:active, a.action:active { transform: none; } }
 @media (forced-colors: active) { button, a.action, .call-room, .record, .panel { border: 1px solid ButtonText; } .visual-zone, #memory-shine { visibility: hidden; } .wordmark { background-color: CanvasText; } }
