@@ -24,6 +24,7 @@ from typing import Callable
 # is deliberately low. Run vla/hand_probe.py to see what your setup actually reads and set it from that.
 HAND_AREA_MIN = 0.012
 CONSECUTIVE = 2  # frames in a row, so one bad detection cannot open the gripper
+POLL_S = 0.12    # how often the remote detector is asked; two polls is the fastest it can release
 
 
 def hand_area(landmarks) -> float:
@@ -62,7 +63,7 @@ def wait_for_hand_remote(poll_url: str, timeout_s: float = 30.0, nag_s: float = 
                 return True
         except Exception as exc:
             print(f"hand poll failed ({exc})", flush=True)
-        time.sleep(0.25)
+        time.sleep(POLL_S)
     why = "no hand seen" if seen_any else "the phone camera sent nothing (is its page open?)"
     print(f"{why} in {timeout_s:.0f}s ({polls} polls) - releasing anyway", flush=True)
     return False

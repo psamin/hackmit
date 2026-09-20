@@ -217,8 +217,9 @@ def main() -> None:
     ap.add_argument("--announce", default=None,
                     help="--handover: shell command run once the bottle is presented, e.g. a voice agent saying "
                          "'catch, grab the bottle'. The release waits for it to finish, then --catch-s longer.")
-    ap.add_argument("--catch-s", type=float, default=2.0,
-                    help="--handover: seconds after the announcement before the gripper opens, to get a hand under it")
+    ap.add_argument("--catch-s", type=float, default=3.0,
+                    help="--handover: hand or no hand, the gripper opens after this long. With --wait-for-hand it "
+                         "opens sooner if the camera sees one; it never holds on longer than this.")
     ap.add_argument("--hand-url", default=None,
                     help="poll this for hand detection instead of opening a camera here, e.g. "
                          "http://127.0.0.1:8000/api/hand-visible - the phone sees the catch, the wrist camera "
@@ -226,7 +227,7 @@ def main() -> None:
     ap.add_argument("--wait-for-hand", action="store_true",
                     help="--handover: hold the bottle until the camera sees a hand, nagging every --nag-s. "
                          "--catch-s becomes the timeout it releases on anyway.")
-    ap.add_argument("--nag-s", type=float, default=7.0,
+    ap.add_argument("--nag-s", type=float, default=7.0,  # longer than --catch-s by default, so it stays quiet
                     help="--wait-for-hand: seconds between spoken prompts while waiting for a hand")
     ap.add_argument("--voice-url", default=None,
                     help="the voice agent's push endpoint, e.g. http://127.0.0.1:8000/api/push. With it, "
