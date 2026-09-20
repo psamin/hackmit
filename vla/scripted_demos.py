@@ -270,13 +270,36 @@ def record(args) -> None:
     rng = np.random.default_rng(args.seed)
     saved = 0
 
+    def wait(seconds):
+        """Sleep out a trajectory, but stop the moment the arm stops reporting.
+
+        A wedged CAN bus ("send buffer full after retries") leaves the motors energized holding a stale setpoint
+        while the arm sags away from it, and the snap back when the link recovers is violent. Better to cancel and
+        make someone look at the wiring than to keep pushing at a bus that is not answering.
+        """
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            time.sleep(0.1)
+            try:
+                live = len(control.get_joint_positions())
+            except Exception as exc:  # the adapter is gone, which is the same emergency
+                live, exc_text = 0, str(exc)
+            else:
+                exc_text = ""
+            if live < len(OPENYAM_JOINTS):
+                control.cancel_trajectory()
+                raise SystemExit(
+                    f"\nSTOPPED: the arm reported {live} of {len(OPENYAM_JOINTS)} joints. {exc_text}\n"
+                    "The CAN bus stopped answering. Switch the 24 V off, reseat the CAN wires (red CANH, black "
+                    "CANL) and the adapter's USB, then re-run arm/arm_probe.py before driving the arm again.")
+
     def play(motion):  # noqa: F811 - defined before the loop that uses it
         """Run poses from the current state, unrecorded and without noise; wait until done."""
         positions = control.get_joint_positions()
         trajectory, duration = build_trajectory(OPENYAM_JOINTS, [positions[n] for n in OPENYAM_JOINTS], motion,
                                                 args.speed, 0.0, rng)
         if control.execute_trajectory(trajectory).status is TrajectoryExecutionStatus.ACCEPTED:
-            time.sleep(duration + 0.5)
+            wait(duration + 0.5)
 
     print(f"recording to {db}", flush=True)
     try:
@@ -300,7 +323,7 @@ def record(args) -> None:
                     time.sleep(0.2)
                 else:
                     raise RuntimeError(f"trajectory rejected: {result.status.name} {result.message or ''}")
-                time.sleep(duration + 0.5)
+                wait(duration + 0.5)
                 # Last chance to throw the episode away: a rep the arm was knocked during, or one you leaned into,
                 # is worse than no rep at all. The arm holds the grasp while you decide.
                 drop = args.auto_reset is None and input(
