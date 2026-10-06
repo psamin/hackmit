@@ -24,7 +24,9 @@ LAST SEEN: the newest frame of each target class at rest goes to <out>/last_seen
 vlm.ask() describes it when it is newer than the last memory.
 """
 import argparse, collections, json, textwrap, threading, time
+from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
 
 import cv2
 import numpy as np
@@ -249,7 +251,35 @@ def main():
                     help="live demo window: detections, then the VLM's memory as it comes back")
     ap.add_argument("--static-camera", action="store_true",
                     help="camera does not move (phone propped on a table/dock): skip ego-motion removal")
+    ap.add_argument("--personal-memory", action="store_true", help="instance-based, wearer-interaction memory; no background sightings")
+    ap.add_argument("--object-db", help="persistent personal object database; default: <out>/objects.sqlite3")
+    ap.add_argument("--allow-cloud", action="store_true", help="consent to sending selected personal event images to the VLM")
+    ap.add_argument("--vlm-daily-calls", type=int, default=200)
+    ap.add_argument("--vlm-monthly-usd", type=float, default=5.0)
+    ap.add_argument("--recorded-at", help="timezone-aware ISO start time when processing a recording in personal mode")
     args = ap.parse_args()
+    if not 0 < args.fps <= 30 or not 0 <= args.conf <= 1:
+        ap.error("fps must be in (0, 30] and conf in [0, 1]")
+    if args.vlm_daily_calls < 0 or not np.isfinite(args.vlm_monthly_usd) or args.vlm_monthly_usd < 0:
+        ap.error("VLM budgets must be finite and nonnegative")
+    recording_start = None
+    if args.personal_memory:
+        if args.no_arm:
+            ap.error("Personal memory needs an outward-facing wearable view with interaction evidence; --no-arm is legacy only")
+        if not Path(args.weights).is_file():
+            ap.error("Personal memory only loads existing trusted local weights; download and review models separately")
+        if args.source.startswith("ws") and urlparse(args.source).hostname not in {"127.0.0.1", "localhost", "::1"}:
+            ap.error("Personal memory requires a loopback relay; use the authenticated server /api/camera from the phone")
+        if not args.source.isdigit() and not args.source.startswith("ws"):
+            try:
+                recorded = datetime.fromisoformat(args.recorded_at or "")
+                if recorded.tzinfo is None:
+                    raise ValueError("Timezone required")
+                recording_start = recorded.timestamp()
+            except ValueError:
+                ap.error("A recording needs --recorded-at with its actual timezone-aware start time; never use playback time as capture time")
+    elif (Path(args.out) / "events.jsonl").exists():
+        ap.error("Existing events.jsonl will not be overwritten. Use a fresh --out directory.")
 
     args.device = pick_device(args.device)
     # Seconds -> frames. The floor of 2 keeps the multi-frame filter meaningful at a low
@@ -280,7 +310,7 @@ def main():
         cap.set(cv2.CAP_PROP_POS_MSEC, args.start * 1000)
 
     vlm, vlm_cost = None, None
-    if not args.no_vlm:
+    if not args.no_vlm and not args.personal_memory:
         from vlm import MODEL, cost_usd, describe_event
         vlm, vlm_cost = describe_event, cost_usd
         log("START", f"vlm: {MODEL} (an event costs roughly $0.005)")
@@ -288,7 +318,7 @@ def main():
     buffer = collections.deque(maxlen=int(BUFFER_S * args.fps))
     tracks, last_seen, reappeared, snap_t = {}, {}, {}, {}
     prev_g, prev_boxes, prev_centres, prev_arm_c, arm_ep = None, [], {}, None, None
-    events_f = open(out / "events.jsonl", "w")
+    events_f = None if args.personal_memory else open(out / "events.jsonl", "x", encoding="utf-8")
     vlm_threads = []
     # What the --show window reports. Written from the VLM threads, read by the draw call,
     # so it is guarded: dict item assignment is atomic in CPython but a counter is not.
@@ -303,6 +333,25 @@ def main():
     timing = collections.defaultdict(float)
     n_frames, n_events, t_wall, last_prune = 0, 0, time.perf_counter(), -1e18
     idx = int(args.start * src_fps) if not live else 0
+    personal = None
+    if args.personal_memory:
+        from personal_memory import PersonalMemory
+
+        def personal_notice(result):
+            verified = result.get("verification") or {}
+            with hud_lock:
+                hud["last_event"] = result.get("event_type", result.get("status", ""))
+                hud["memory"] = {"event": result.get("status", "candidate"),
+                                 "object": verified.get("object", result.get("object", "object")),
+                                 "location_description": (verified.get("scene") or {}).get("description") or result.get("reason", "Awaiting verification"),
+                                 "confidence": verified.get("action_confidence", 0)}
+            log("MEMORY", f"{result.get('event_type', '')} {result.get('status', '')} {result.get('reason', '')}")
+
+        personal = PersonalMemory(args.object_db or out / "objects.sqlite3", fps=args.fps,
+                                  allow_cloud=args.allow_cloud and not args.no_vlm,
+                                  daily_calls=args.vlm_daily_calls, monthly_usd=args.vlm_monthly_usd,
+                                  notify=personal_notice)
+        log("START", f"personal object store: {personal.store.path}; cloud={'on' if personal.verifier else 'off'}")
 
     def emit(fire, n, i, tr, t, b, frame):
         tr.armed, tr.active_frames, reappeared[n] = False, 0, False
@@ -387,6 +436,11 @@ def main():
         t = time.time() if live else idx / src_fps
         if args.end is not None and t > args.end:
             break
+        original_frame = frame
+        metadata = getattr(cap, "metadata", None)
+        if metadata is None:
+            metadata = {"captured_at": t if live else (recording_start or 0) + t,
+                        "time_source": "capture", "session_id": "local-camera", "location": None}
         frame = cv2.resize(frame, (PROC_W, int(frame.shape[0] * PROC_W / frame.shape[1])))
         g = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         diag = float(np.hypot(*g.shape))
@@ -426,6 +480,22 @@ def main():
         t0 = time.perf_counter()
         H = None if args.static_camera else (ego_homography(prev_g, g, prev_boxes) if prev_g is not None else None)
         timing["ego_motion"] += time.perf_counter() - t0
+
+        if personal is not None:
+            personal.process_frame(original_frame, frame, boxes, names, ids, arms, H, args.static_camera, metadata, targets)
+            prev_g, prev_boxes = g, list(boxes)
+            n_frames += 1
+            with hud_lock:
+                hud.update(events=personal.events, calls=personal.calls,
+                           in_tok=personal.input_tokens, out_tok=personal.output_tokens)
+                snapshot = dict(hud)
+            if args.show:
+                shown_fps = n_frames / max(time.perf_counter() - t_wall, 1e-6)
+                cv2.imshow("Compass - personal memory", draw_overlay(frame, boxes, names, confs, ids, targets,
+                    snapshot, shown_fps, "personal: wearer evidence + instance review", arm_boxes=arms))
+                if cv2.waitKey(1) & 0xFF == ord("q"):
+                    break
+            continue
 
         centres = {}
         buffer.append((t, frame))
@@ -560,7 +630,12 @@ def main():
                 th.join()
         except KeyboardInterrupt:
             print("abandoned; those memories were not written", flush=True)
-    events_f.close()
+    if personal is not None:
+        personal.close()
+        n_events = personal.events
+        hud.update(calls=personal.calls, in_tok=personal.input_tokens, out_tok=personal.output_tokens)
+    if events_f is not None:
+        events_f.close()
     if hasattr(cap, "release"):  # GlassesStream has no release(); cv2.VideoCapture does
         cap.release()
     if args.show:
@@ -576,8 +651,12 @@ def main():
     log("DONE", f"{n_frames} frames, {n_events} events, {hud['calls']} VLM call(s), "
                 f"{hud['in_tok']}/{hud['out_tok']} tokens"
                 + (f", ${stats['vlm_cost_usd']:.4f}" if "vlm_cost_usd" in stats else ""))
+    if personal is not None:
+        stats.update(vlm_cost_usd=round(personal.cost_usd, 6), object_memory=personal.store.usage())
     print(json.dumps(stats))
-    json.dump(stats, open(out / "stats.json", "w"))
+    stats_path = out / (f"stats-{personal.run_id}.json" if personal is not None else "stats.json")
+    with stats_path.open("x", encoding="utf-8") as handle:
+        json.dump(stats, handle)
 
 
 if __name__ == "__main__":

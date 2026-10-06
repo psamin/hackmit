@@ -129,7 +129,7 @@ def _google(lat, lon):
     return None
 
 
-def resolve(lat, lon, accuracy_m=None) -> dict:
+def resolve(lat, lon, accuracy_m=None, allow_google=True) -> dict:
     """Coordinates -> {"place", "source", "lat", "lon", "accuracy_m", "distance_m"}.
 
     `source` is "known" (curated, trustworthy), "google"/"google_address" (nearest
@@ -142,8 +142,10 @@ def resolve(lat, lon, accuracy_m=None) -> dict:
         return out
 
     name, dist = nearest_known(lat, lon)
-    if name and dist is not None and dist <= KNOWN_RADIUS_M:
+    if name and dist is not None and dist + (accuracy_m or 0) <= KNOWN_RADIUS_M:
         out.update(place=name, source="known", distance_m=round(dist))
+        return out
+    if not allow_google:
         return out
 
     key = (round(lat, CACHE_PRECISION), round(lon, CACHE_PRECISION))

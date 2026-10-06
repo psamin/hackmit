@@ -24,7 +24,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import httpx
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import (FileResponse, JSONResponse, PlainTextResponse,
                                RedirectResponse, StreamingResponse)
 from fastapi.staticfiles import StaticFiles
@@ -77,6 +77,11 @@ app.include_router(caregiver.router)
 app.include_router(caregiver_schedule.router)
 app.include_router(setup.router)
 
+import object_api
+from perception.capture import decode_frame, finite_number, location_at
+
+object_api.install(app, lambda: MEMORY_JSONL)
+
 
 # --------------------------------------------------------------------------
 # Deepgram browser auth: mint a short-lived JWT so the API key stays server-side.
@@ -105,12 +110,21 @@ async def trace(request, call_next):
     """One place that sees every call the page makes, so nothing agentic goes unlogged
     just because someone added an endpoint and forgot to print in it."""
     path = request.url.path
+    personal_mode = object_api.active(MEMORY_JSONL)
+    if personal_mode and path.startswith(("/api/", "/frames/", "/photos/")) and not path.startswith(("/api/caregiver/", "/api/setup/", "/api/calendar/google/")):
+        try:
+            caregiver.require_caregiver(request)
+        except HTTPException as exc:
+            return JSONResponse({"error": "Personal memory requires a paired caregiver session. Sign in at /caregiver."},
+                                exc.status_code, headers={"Cache-Control": "no-store"})
     tool = AGENT_ROUTES.get(path)
     if tool:
         args = dict(request.query_params)
         log("AGENT", f"{tool}({', '.join(f'{k}={v!r}' for k, v in args.items())})")
     t0 = time.perf_counter()
     response = await call_next(request)
+    if personal_mode and path.startswith(("/api/", "/frames/", "/photos/")):
+        response.headers["Cache-Control"] = "no-store"
     if tool:
         log("AGENT", f"{tool} -> HTTP {response.status_code} in {(time.perf_counter()-t0)*1000:.0f}ms")
     elif path.startswith("/api/") and path not in QUIET:
@@ -132,8 +146,8 @@ async def dg_token():
         # authenticates the agent socket directly as the subprotocol token.
         # Fine here: this endpoint only serves pages on our own LAN.
         if r.status_code == 403:
-            return PlainTextResponse(key)
-        return JSONResponse({"error": f"Deepgram grant failed: {r.status_code} {r.text}"}, 502)
+            return JSONResponse({"error": "Deepgram could not mint a short-lived token. Ask your helper to check the API key's grant permissions."}, 502)
+        return JSONResponse({"error": f"Deepgram token grant failed (HTTP {r.status_code})."}, 502)
     return PlainTextResponse(r.json()["access_token"])
 
 
@@ -315,6 +329,26 @@ async def push_stream(request: Request):
 
     async def stream():
         try:
+            if object_api.active(MEMORY_JSONL):
+                store = await asyncio.to_thread(object_api.store_for, MEMORY_JSONL)
+                recent = await asyncio.to_thread(object_api.notices, store)
+                seen = {row["id"] for row in recent}
+                yield f"data: {json.dumps({'type': 'hello', 'memories': recent})}\n\n"
+                while not await request.is_disconnected():
+                    try:
+                        caregiver.require_caregiver(request)
+                    except HTTPException:
+                        break
+                    try:
+                        yield f"data: {json.dumps(await asyncio.wait_for(q.get(), 1))}\n\n"
+                    except asyncio.TimeoutError:
+                        yield ": keepalive\n\n"
+                    current = await asyncio.to_thread(object_api.notices, store)
+                    for notice in current:
+                        if notice["id"] not in seen:
+                            yield f"data: {json.dumps({'type': 'memory_saved', **notice})}\n\n"
+                    seen = {row["id"] for row in current}
+                return
             memories = await asyncio.to_thread(MemoryTail, MEMORY_JSONL)
             yield f"data: {json.dumps({'type': 'hello', 'memories': list(memories.recent)})}\n\n"
             while not await request.is_disconnected():
@@ -417,6 +451,9 @@ async def find(q: str):
     instance identity behind these memories. So the wording is "I've seen it in N
     places", with a time against each, and the person decides.
     """
+    if object_api.active(MEMORY_JSONL):
+        store = await asyncio.to_thread(object_api.store_for, MEMORY_JSONL)
+        return await asyncio.to_thread(object_api.find_objects, store, q)
     from es import search_all
     mems, source = search_all(q, MEMORY_JSONL, limit=3)
     log("DB", f"search {q!r} -> {len(mems)} distinct place(s) from {source}")
@@ -462,10 +499,6 @@ async def es_index(mem: dict):
     from es import index_memory
     # Stamp it here rather than in the pipeline: the pipeline runs on a laptop with no
     # GPS, and the phone is the thing that actually knows where it is.
-    if _last_fix.get("place") and "place" not in mem:
-        mem["place"] = _last_fix["place"]
-        mem["place_source"] = _last_fix["source"]
-        mem["lat"], mem["lon"] = _last_fix.get("lat"), _last_fix.get("lon")
     ok = index_memory(mem)
     log("DB", f"index {mem.get('object', '?')!r} \"{(mem.get('location_description') or '')[:60]}\" -> "
               + ("elasticsearch OK" if ok else "NOT INDEXED (ELASTICSEARCH_URL unset or ES down)"))
@@ -484,16 +517,28 @@ async def set_location(body: dict):
     building, so places.resolve() refuses it rather than guessing."""
     from places import resolve
 
+    if body.get("status") in {"denied", "stopped", "unavailable"}:
+        _last_fix.clear()
+        return {"place": None, "source": "no_fix"}
     try:
-        lat, lon = float(body["lat"]), float(body["lon"])
+        lat, lon = finite_number(body.get("lat")), finite_number(body.get("lon"))
+        if not -90 <= lat <= 90 or not -180 <= lon <= 180:
+            raise ValueError("Coordinate out of range")
+        acc = finite_number(body["accuracy_m"]) if body.get("accuracy_m") is not None else None
+        if acc is not None and acc < 0:
+            raise ValueError("Invalid accuracy")
+        observed_at = finite_number(body["observed_at"]) if body.get("observed_at") is not None else None
     except (KeyError, TypeError, ValueError):
-        return JSONResponse({"error": "lat and lon required"}, 400)
-    acc = body.get("accuracy_m")
-    loc = resolve(lat, lon, float(acc) if acc is not None else None)
+        return JSONResponse({"error": "Valid coordinates, accuracy and acquisition timestamp required"}, 400)
+    personal_mode = object_api.active(MEMORY_JSONL)
+    if personal_mode and location_at({"lat": lat, "lon": lon, "accuracy_m": acc, "observed_at": observed_at}, time.time())["status"] != "available":
+        _last_fix.clear()
+        return {"place": None, "source": "no_usable_fix"}
+    loc = resolve(lat, lon, acc, allow_google=not personal_mode)
     changed = loc.get("place") != _last_fix.get("place")
     _last_fix.clear()
     _last_fix.update(loc)
-    _last_fix["at"] = time.time()  # so time_and_place can refuse a stale fix
+    _last_fix["at"] = observed_at if observed_at is not None else time.time()  # so time_and_place can refuse a stale fix
     if changed:
         log("PLACE", f"now {loc.get('place') or 'somewhere unrecognised'} "
                      f"({loc['source']}, fix +/-{acc}m)")
@@ -1041,8 +1086,27 @@ async def open_camera_relay():
                          compression=None, proxy=None, **options)
 
 
+_active_personal_camera = None
+
+
 @app.websocket("/api/camera")
 async def camera_stream(ws: WebSocket):
+    global _active_personal_camera
+    personal_mode = object_api.active(MEMORY_JSONL)
+    if personal_mode:
+        try:
+            caregiver.require_caregiver(ws)
+        except HTTPException:
+            await ws.accept()
+            await ws.send_json({"type": "camera_error", "retry": False,
+                                "message": "Personal memory is locked. Ask your helper to sign in at /caregiver on this phone."})
+            await ws.close(code=1008)
+            return
+        if _active_personal_camera is not None:
+            await ws.accept()
+            await ws.send_json({"type": "camera_error", "retry": False, "message": "A paired camera is already streaming."})
+            await ws.close(code=1008)
+            return
     origin = ws.headers.get("origin")
     if origin and urlsplit(origin).netloc != ws.headers.get("host"):
         log("CAMERA", f"origin mismatch: origin={urlsplit(origin).netloc!r} host={ws.headers.get('host')!r} "
@@ -1053,24 +1117,45 @@ async def camera_stream(ws: WebSocket):
         await ws.close(code=1008)
         return
     await ws.accept()
+    if personal_mode:
+        _active_personal_camera = ws
     relay, tasks = None, []
     try:
         relay = await open_camera_relay()
         await ws.send_json({"type": "camera_ready"})
 
         async def forward():
-            count = 0
+            count, sequence, camera_session = 0, -1, None
             while True:
                 frame = await ws.receive_bytes()
                 if len(frame) > 2**20:
                     await ws.close(code=1009)
                     return
+                if personal_mode:
+                    try:
+                        caregiver.require_caregiver(ws)
+                    except HTTPException:
+                        await ws.close(code=1008)
+                        return
+                jpeg, metadata = decode_frame(frame)
+                if personal_mode and metadata["time_source"] != "capture":
+                    await ws.send_json({"type": "camera_error", "retry": False, "message": "Reload Pam's camera page to send timestamped frames."})
+                    await ws.close(code=1008)
+                    return
+                if metadata.get("session_id"):
+                    if camera_session is not None and metadata["session_id"] != camera_session:
+                        await ws.close(code=1008)
+                        return
+                    camera_session = metadata["session_id"]
+                    if metadata["frame_id"] <= sequence:
+                        continue
+                    sequence = metadata["frame_id"]
                 await relay.send(frame)
                 # Keep the newest frame so the face tools can answer "who is in front of
                 # the camera" without a second camera connection. One reference, not a
                 # buffer: nothing here wants history.
                 global _last_frame, _last_frame_ts
-                _last_frame, _last_frame_ts = frame, time.time()
+                _last_frame, _last_frame_ts = jpeg, metadata["captured_at"]
                 count += 1
                 if count == 1 or count % 20 == 0:
                     await ws.send_json({"type": "frame_received", "count": count})
@@ -1090,6 +1175,8 @@ async def camera_stream(ws: WebSocket):
     except WebSocketDisconnect:
         pass
     finally:
+        if _active_personal_camera is ws:
+            _active_personal_camera = None
         for task in tasks:
             task.cancel()
         if tasks:

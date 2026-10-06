@@ -19,6 +19,11 @@ import cv2
 import numpy as np
 from websockets.asyncio.server import serve
 
+try:
+    from .capture import decode_frame
+except ImportError:
+    from capture import decode_frame
+
 
 class GlassesStream:
     """Covers the cv2.VideoCapture calls memory_pipeline makes. Always hands out the newest frame, so a slow
@@ -38,22 +43,45 @@ class GlassesStream:
             self._ssl = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             self._ssl.load_cert_chain(cert, key)
         self.received = self.taken = 0
-        self._jpeg = None
+        self._jpeg = self._selected_jpeg = None
+        self._metadata, self.metadata = {}, {}
+        self._active = None
         self._cond = threading.Condition()
         threading.Thread(target=lambda: asyncio.run(self._serve()), daemon=True).start()
 
     async def _serve(self):
         async def handler(ws):
+            if self._active is not None:
+                await ws.close(code=1008, reason="Only one camera may stream")
+                return
+            self._active = ws
+            last_sequence, session_id = -1, None
             print(f"camera connected: {ws.remote_address}", flush=True)
-            async for msg in ws:
-                if isinstance(msg, bytes):
-                    with self._cond:
-                        self._jpeg, self.received = msg, self.received + 1
-                        self._cond.notify_all()
-            print("camera disconnected; waiting for reconnect", flush=True)
+            try:
+                async for msg in ws:
+                    if isinstance(msg, bytes):
+                        try:
+                            jpeg, metadata = decode_frame(msg)
+                        except ValueError:
+                            await ws.close(code=1008, reason="Invalid or stale camera frame")
+                            break
+                        if metadata.get("session_id"):
+                            if session_id is not None and metadata["session_id"] != session_id:
+                                await ws.close(code=1008, reason="Camera session changed")
+                                break
+                            session_id = metadata["session_id"]
+                            if metadata["frame_id"] <= last_sequence:
+                                continue
+                            last_sequence = metadata["frame_id"]
+                        with self._cond:
+                            self._jpeg, self._metadata, self.received = jpeg, metadata, self.received + 1
+                            self._cond.notify_all()
+            finally:
+                self._active = None
+                print("camera disconnected; waiting for reconnect", flush=True)
 
         scheme = "wss" if self.secure else "ws"
-        async with serve(handler, self.host, self.port, max_size=2**23, ssl=self._ssl):
+        async with serve(handler, self.host, self.port, max_size=2**20, ssl=self._ssl):
             print(f"waiting for a camera on {scheme}://{self.host}:{self.port}", flush=True)
             await asyncio.Future()
 
@@ -61,10 +89,11 @@ class GlassesStream:
         with self._cond:
             self._cond.wait_for(lambda: self.received > self.taken)
             self.taken = self.received
+            self._selected_jpeg, self.metadata = self._jpeg, dict(self._metadata)
             return True
 
     def retrieve(self):
-        frame = cv2.imdecode(np.frombuffer(self._jpeg, np.uint8), cv2.IMREAD_COLOR)
+        frame = cv2.imdecode(np.frombuffer(self._selected_jpeg, np.uint8), cv2.IMREAD_COLOR)
         return frame is not None, frame
 
     def get(self, prop):

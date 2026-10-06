@@ -90,6 +90,48 @@ not take down the other.
 
 ---
 
+## Verified design constraints — 2026-09-22
+
+Source review of the existing baseline, not a claim that an instance-identity or
+room-localization upgrade is implemented. No new accuracy/speed measurements here.
+
+- **Browser location is already wired.** `phone/agent.html:startLocation()` uses
+  `watchPosition` and POSTs `lat`, `lon`, `accuracy_m` to `/api/location`;
+  `server/app.py:set_location()` receives it. A browser-only phone cannot expose
+  Wi-Fi BSSID to this page. Do not propose browser BSSID-based room identification.
+  `server/places.py` resolves coarse places, not rooms, and rejects supplied accuracy
+  worse than 200 m. Geolocation is not proof of which room contains an object.
+- **The local MobileCLIP artifact is text-only.** The parent agent inspected
+  `mobileclip2_b.ts` on Windows: TorchScript `TextModelWithNormalization`,
+  `forward(tokens)`, no `encode_image`. The filename does not establish an image
+  encoder. Image/crop/scene embeddings need a separately verified image encoder;
+  this documentation pass did not install or validate one.
+- **Class history is not instance identity.** In the inspected baseline
+  `perception/memory_pipeline.py`, `last_seen`, `reappeared` and `snap_t` are keyed by
+  class; snapshots overwrite `last_seen/<class>.jpg`, and `sighted` gates by class.
+  Two physical bottles can therefore share that history. Tracker IDs and the
+  same-class lost-track donor heuristic do not establish persistent re-identification.
+- **Contact is not ownership or wearer attribution.** The near-edge/large-`person`
+  box rule and `covered` overlap test in `memory_pipeline.py` are geometric
+  heuristics, not evidence that a hand is the wearer's. Overlap does not even prove
+  physical contact; observed touching alone still does not establish ownership.
+  Earlier "wearer's arm" wording describes an assumption, not verified identity.
+- **High accuracy needs held-out real footage.** Test same-class distractors,
+  occlusion and camera motion, including instance mix-ups and incorrect location
+  answers, before claiming reliability. A larger detector alone is not a guaranteed
+  fix for tracking, attribution or event errors; benchmark the actual configuration.
+- **Historical measurements retain their scope.** Tables below apply only to their
+  stated checkpoints, devices, prompts, resolutions and scenes. Missing scope is
+  unknown, not permission to transfer numbers to another model/device. Keep the
+  original measurements; do not present them as validation of a new system.
+
+**Pending decisions/tests:** select and verify a real image encoder; define
+persistent-instance matching and ambiguous/unknown behavior; establish what evidence
+supports actor/ownership claims; collect held-out footage and record tested changes
+and remaining limitations before upgrading any capability or accuracy claims.
+
+---
+
 ## Test results
 
 All measured, all reproducible with the two scripts in `perception/`.

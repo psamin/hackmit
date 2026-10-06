@@ -653,6 +653,7 @@ const CAM_URL = `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.
 
 let camStream = null, camSocket = null, camTimer = null, camVideo = null;
 let camSent = 0, camSkipped = 0, camStart = 0;
+let camSessionId = null, camFrameId = 0;
 let camRetry = null, camAttempts = 0, camBusy = false, camStarting = false, camGeneration = 0;
 const camCanvas = document.createElement("canvas");
 const camCtx = camCanvas.getContext("2d", { alpha: false });
@@ -701,7 +702,10 @@ async function camSendFrame() {
   const scale = CAM.height / camVideo.videoHeight;
   const w = Math.round(camVideo.videoWidth * scale), h = CAM.height;
   if (camCanvas.width !== w || camCanvas.height !== h) { camCanvas.width = w; camCanvas.height = h; }
+  const capturedAt = Date.now() / 1000;
   camCtx.drawImage(camVideo, 0, 0, w, h);
+  const captureMetadata = { session_id: camSessionId, frame_id: ++camFrameId,
+    captured_at: capturedAt, location: latestGeoFix ? { ...latestGeoFix } : null };
   const sock = camSocket;
   camBusy = true;
   try {
@@ -709,7 +713,13 @@ async function camSendFrame() {
     if (!blob) return;
     const buffer = await blob.arrayBuffer();
     if (sock !== camSocket || sock.readyState !== WebSocket.OPEN) return;
-    sock.send(buffer);
+    const header = new TextEncoder().encode(JSON.stringify(captureMetadata));
+    const packet = new Uint8Array(8 + header.length + buffer.byteLength);
+    packet.set([67, 77, 80, 50]);
+    new DataView(packet.buffer).setUint32(4, header.length, false);
+    packet.set(header, 8);
+    packet.set(new Uint8Array(buffer), 8 + header.length);
+    sock.send(packet.buffer);
     camSent++;
   } finally { camBusy = false; }
 }
@@ -730,6 +740,9 @@ async function startCamera() {
     });
     if (generation !== camGeneration) { stream.getTracks().forEach(t => t.stop()); return; }
     camStream = stream;
+    camSessionId = crypto.randomUUID();
+    camFrameId = 0;
+    startLocation();
     camVideo = $("camera-preview");
     camVideo.hidden = false;
     camVideo.playsInline = true; camVideo.muted = true; camVideo.srcObject = camStream;
@@ -799,6 +812,7 @@ function connectCamera() {
 }
 
 function stopCamera() {
+  stopLocation();
   camGeneration++;
   clearTimeout(camRetry); camRetry = null; camAttempts = 0;
   clearInterval(camTimer); camTimer = null;
@@ -825,21 +839,35 @@ $("camera-stop").onclick = stopCamera;
 // Accuracy is sent too and matters as much as the coordinates - the server refuses
 // a fix worse than 200m rather than confidently naming the wrong building.
 // ---------------------------------------------------------------------------
-let geoWatch = null;
+let geoWatch = null, latestGeoFix = null;
+
+function stopLocation() {
+  if (geoWatch !== null) navigator.geolocation.clearWatch(geoWatch);
+  geoWatch = null;
+  latestGeoFix = null;
+  fetch("/api/location", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ status: "stopped" }) }).catch(() => {});
+}
 
 function startLocation() {
   if (geoWatch !== null || !navigator.geolocation) return;
   geoWatch = navigator.geolocation.watchPosition(
     (pos) => {
+      latestGeoFix = { lat: pos.coords.latitude, lon: pos.coords.longitude,
+        accuracy_m: pos.coords.accuracy, observed_at: pos.timestamp / 1000 };
       fetch("/api/location", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ lat: pos.coords.latitude, lon: pos.coords.longitude,
-                               accuracy_m: pos.coords.accuracy }),
+        body: JSON.stringify(latestGeoFix),
       }).catch(() => {});
     },
     // Denied or unavailable is not an error worth interrupting anyone over: every
     // memory still records what it SAW, it just does not also record where.
-    (err) => post_log("location", `unavailable: ${err.message}`),
+    (err) => {
+      latestGeoFix = null;
+      fetch("/api/location", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: err.code === 1 ? "denied" : "unavailable" }) }).catch(() => {});
+      post_log("location", `unavailable: ${err.message}`);
+    },
     { enableHighAccuracy: true, maximumAge: 30000, timeout: 20000 });
 }
 
